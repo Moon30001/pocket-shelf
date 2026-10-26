@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b0b0e">
+<title>Playing · Pocket Shelf</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="player">
+<div class="pbar">
+  <button class="btn" id="backBtn" aria-label="Back to library">‹ Library</button>
+  <div class="title" id="title">Loading…</div>
+  <span class="saved" id="saved"></span>
+  <button class="btn" id="switchBtn">Switch game</button>
+</div>
+<div id="stage"><div id="game"></div></div>
+
+<div class="switcher" id="switcher"><div class="sheet">
+  <h3>Switch game</h3>
+  <div class="sub">Your progress here is saved before switching.</div>
+  <div id="swList"></div>
+</div></div>
+
+<script src="lib.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const id = new URLSearchParams(location.search).get("id");
+let game = null, lastSaveSig = "", sessionStart = Date.now(), lastTick = Date.now();
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function sig(u8) { let h = 2166136261; for (let i = 0; i < u8.length; i += 7) h = Math.imul(h ^ u8[i], 16777619); return u8.length + ":" + (h >>> 0); }
+function gm() { return window.EJS_emulator && window.EJS_emulator.gameManager; }
+
+async function storeSave(data) {
+  if (!data || !data.length) return;
+  const s = sig(data);
+  if (s === lastSaveSig) return;
+  lastSaveSig = s;
+  await Store.putSave({ id, data: new Uint8Array(data), updated: Date.now() });
+  $("#saved").textContent = "Saved ✓";
+  clearTimeout(storeSave._t); storeSave._t = setTimeout(() => $("#saved").textContent = "", 2500);
+}
+
+// Write the in-game save to disk right now (used before leaving / switching / backgrounding)
+function flush() {
+  return new Promise((resolve) => {
+    const m = gm();
+    if (!m || !window.EJS_emulator.started) return resolve();
+    try {
+      m.saveSaveFiles();
+      const data = m.getSaveFile(false);
+      const done = () => storeSave(data).finally(resolve);
+      m.FS.syncfs(false, done);
+    } catch (e) { console.warn(e); resolve(); }
+  });
+}
+
+async function tickPlaytime() {
+  if (!game) return;
+  const now = Date.now();
+  game.playSeconds = (game.playSeconds || 0) + Math.round((now - lastTick) / 1000);
+  game.lastPlayed = now; lastTick = now;
+  await Store.putGame(game);
+}
+
+async function leave(url) {
+  await flush();
+  await tickPlaytime();
+  location.href = url;
+}
+
+$("#backBtn").onclick = () => leave("index.html");
+$("#switchBtn").onclick = async () => {
+  const all = (await Store.allGames()).sort((a, b) => (b.lastPlayed - a.lastPlayed) || a.title.localeCompare(b.title));
+  $("#swList").innerHTML = all.map(g => `
+    <button class="sw-item ${g.id === id ? "current" : ""}" data-id="${g.id}" style="--c:${g.color}">
+      <span class="sq">${SYSTEMS[g.system].label}</span>
+      <span><b>${esc(g.title)}</b><br><small style="color:var(--muted)">${g.id === id ? "Playing now" : fmtAgo(g.lastPlayed)}</small></span>
+    </button>`).join("");
+  $("#switcher").classList.add("open");
+};
+$("#switcher").onclick = (e) => {
+  if (e.target.id === "switcher") return $("#switcher").classList.remove("open");
+  const b = e.target.closest("[data-id]");
+  if (!b) return;
+  if (b.dataset.id === id) return $("#switcher").classList.remove("open");
+  leave("play.html?id=" + encodeURIComponent(b.dataset.id));
+};
+
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { flush(); tickPlaytime(); } });
+addEventListener("pagehide", () => { flush(); });
+
+function fail(msg) {
+  $("#title").textContent = "Couldn't start";
+  $("#game").innerHTML = `<div class="err">${esc(msg)}<br><br><a class="btn primary" href="index.html" style="text-decoration:none">Back to library</a></div>`;
+}
+
+(async function boot() {
+  registerSW();
+  if (!id) return fail("No game selected.");
+  game = await Store.getGame(id);
+  const rom = game && await Store.getRom(id);
+  if (!game || !rom) return fail("This game isn't on your shelf any more.");
+  document.title = game.title + " · Pocket Shelf";
+  $("#title").textContent = game.title;
+  game.lastPlayed = Date.now();
+  await Store.putGame(game);
+
+  const existing = await Store.getSave(id);
+  if (existing && !existing.pendingImport) lastSaveSig = sig(existing.data);
+
+  Object.assign(window, {
+    EJS_player: "#game",
+    EJS_core: game.core,
+    EJS_gameName: game.emuName,
+    EJS_gameUrl: URL.createObjectURL(rom.data),
+    EJS_pathtodata: "./",
+    // every emulator file sits next to this page (flat layout, easy to upload from a phone)
+    EJS_paths: Object.fromEntries([
+      "emulator.js", "nipplejs.js", "shaders.js", "storage.js", "gamepad.js", "GameManager.js",
+      "socket.io.min.js", "compression.js", "emulator.css", "extract7z.js", "extractzip.js",
+      "mgba-wasm.data", "mgba-legacy-wasm.data", "melonds-wasm.data", "melonds-legacy-wasm.data",
+      "desmume2015-wasm.data", "desmume2015-legacy-wasm.data", "mgba.json", "melonds.json", "desmume2015.json"
+    ].map(f => [f, f])),
+    EJS_DEBUG_XX: true,            // load the bundled (unminified) emulator files
+    EJS_language: "en-US",
+    EJS_disableAutoLang: false,
+    EJS_startOnLoaded: true,
+    EJS_color: game.color,
+    EJS_backgroundColor: "#000",
+    EJS_threads: false,
+    EJS_Buttons: { netplay: false, exitEmulation: false },
+    EJS_defaultOptions: { "save-state-location": "browser", "save-save-interval": "30" },
+    EJS_ready: () => {
+      EJS_emulator.on("saveSaveFiles", (data) => storeSave(data));
+    },
+    EJS_onGameStart: async () => {
+      const m = gm();
+      // Auto-start skips the emulator's touch detection, so turn on the on-screen controls ourselves
+      if (navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches) {
+        EJS_emulator.touch = true;
+        if (EJS_emulator.virtualGamepad) EJS_emulator.virtualGamepad.style.display = "";
+        EJS_emulator.handleResize();
+      }
+      try {
+        const path = m.getSaveFilePath();
+        const onDisk = m.FS.analyzePath(path).exists;
+        const backup = await Store.getSave(id);
+        // Imported save, or the emulator's copy went missing → write ours in and reboot the game
+        if (backup && (backup.pendingImport || !onDisk)) {
+          const dir = path.substring(0, path.lastIndexOf("/"));
+          if (dir && !m.FS.analyzePath(dir).exists) m.FS.mkdirTree ? m.FS.mkdirTree(dir) : m.FS.mkdir(dir);
+          m.FS.writeFile(path, backup.data);
+          m.loadSaveFiles();
+          m.restart();
+          lastSaveSig = sig(backup.data);
+          await Store.putSave({ id, data: backup.data, updated: Date.now() });
+          EJS_emulator.displayMessage(backup.pendingImport ? "Imported save loaded" : "Save restored", 3000);
+        }
+      } catch (e) { console.warn("Save restore skipped:", e); }
+      lastTick = Date.now();
+      setInterval(() => { flush(); tickPlaytime(); }, 15000);
+    }
+  });
+
+  const s = document.createElement("script");
+  s.src = "loader.js";
+  s.onerror = () => fail("The emulator files are missing. Reload once while online.");
+  document.body.appendChild(s);
+})();
+</script>
+</body>
+</html>
