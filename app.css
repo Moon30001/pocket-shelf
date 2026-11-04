@@ -103,3 +103,24 @@ body.player { overflow: hidden; height: 100dvh; display: flex; flex-direction: c
 .sw-item .sq { width: 40px; height: 40px; border-radius: 10px; background: var(--c); display: grid; place-items: center; font-weight: 800; font-size: 12px; color: #fff; flex: none; }
 .sw-item.current { outline: 1px solid var(--accent); }
 .err { color: #fff; padding: 24px; text-align: center; }
+
+/* ---------- player: full-height game, controls tucked into the bottom corners ---------- */
+body.player #stage { padding-top: env(safe-area-inset-top); }
+body.player .pbar { position: fixed; left: 0; right: 0; bottom: max(6px, env(safe-area-inset-bottom)); z-index: 30;
+  background: none; border: 0; padding: 0 8px; justify-content: space-between; pointer-events: none; }
+body.player .pbar .title, body.player .pbar .saved { display: none; }
+body.player .pbar .btn { pointer-events: auto; padding: 6px 10px; font-size: 12px; font-weight: 600;
+  background: rgba(255,255,255,.10); color: #d8d8e0; border: 1px solid rgba(255,255,255,.22); }
+
+/* bigger, chunkier D-pad: larger touch area and thicker arms */
+body.player .ejs_virtualGamepad_left { width: 168px; left: 8px; }
+body.player .ejs_virtualGamepad_left .ejs_dpad_main { width: 168px; height: 168px; top: -43px; }
+@media (orientation: landscape) {
+  body.player .ejs_virtualGamepad_left { width: 140px; }
+  body.player .ejs_virtualGamepad_left .ejs_dpad_main { width: 140px; height: 140px; top: -15px; }
+  body.player .ejs_dpad_horizontal { height: 50px; } body.player .ejs_dpad_vertical { width: 50px; }
+}
+body.player .ejs_dpad_horizontal { height: 58px; border-radius: 8px; }
+body.player .ejs_dpad_vertical { width: 58px; border-radius: 8px; }
+body.player .ejs_dpad_horizontal:before, body.player .ejs_dpad_horizontal:after,
+body.player .ejs_dpad_vertical:before, body.player .ejs_dpad_vertical:after { border-width: 11px; }
