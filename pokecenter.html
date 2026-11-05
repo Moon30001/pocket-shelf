@@ -76,6 +76,8 @@ const D = PkData;
 function toast(msg, ms = 3000) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), ms); }
 const spName = (n) => (D.species[n] || {}).name || "#" + n;
 const genderSym = (g) => g === 0 ? " ♂" : g === 1 ? " ♀" : "";
+// identity of a Pokémon independent of where it sits (used to catch "the save changed under us")
+const monId = (m) => [m.species, m.exp, m.tid, m.sid, m.pid, m.otName, m.nickname, (m.moves || []).join("-")].join("|");
 const keyOf = (x) => x.where === "party" ? `p${x.slot}` : `b${x.box}-${x.slot}`;
 const whereText = (x) => x.where === "party" ? "Party" : `Box ${x.box + 1}`;
 
@@ -107,11 +109,8 @@ function gameOptions(selectedId, filter = () => true, placeholder = "Choose a ga
 async function commit(label, changes) {   // changes: [{ game, rec, save }]
   const backup = { key: Date.now() + "-" + Math.random().toString(36).slice(2, 6), label, created: Date.now(),
     saves: changes.map(c => ({ id: c.game.id, title: c.game.title, data: new Uint8Array(c.rec.data) })) };
-  await Store.putBackup(backup);
-  for (const c of changes) {
-    const data = c.save.toBytes();
-    await Store.putSave({ id: c.game.id, data, updated: Date.now(), pendingImport: true });
-  }
+  const saves = changes.map(c => ({ id: c.game.id, data: c.save.toBytes(), updated: Date.now(), pendingImport: true }));
+  await Store.commitSaves(backup, saves);
   const all = (await Store.allBackups()).sort((a, b) => b.created - a.created);
   for (const old of all.slice(15)) await Store.deleteBackup(old.key);
   return backup;
@@ -157,7 +156,13 @@ async function doMove() {
   try {
     const from = await openGame(mv.from.game), to = await openGame(mv.to.game);   // fresh copies
     const list = from.save.list();
-    const picked = [...mv.picked].map(k => list.find(y => keyOf(y) === k));
+    // the save may have changed since you picked (e.g. the game synced): make sure each slot still holds the same Pokémon
+    const shown = mv.from.save.list();
+    const picked = [...mv.picked].map(k => {
+      const now = list.find(y => keyOf(y) === k), then = shown.find(y => keyOf(y) === k);
+      if (!now || !then || monId(now.mon) !== monId(then.mon)) throw new Error("That game's save changed since you picked. Pick again.");
+      return now;
+    });
     const moved = [];
     for (const x of picked) {
       const r = PkSave.convert(x.mon, from.save.gen, to.save.gen, { targetVersion: to.save.version });
@@ -165,8 +170,8 @@ async function doMove() {
       to.save.insert(r.mon);
       moved.push(x);
     }
-    // remove from the source: boxes first, then party from the highest slot so indexes stay valid
-    moved.filter(x => x.where === "box").forEach(x => from.save.remove(x));
+    // remove from the source last-slot-first, so earlier removals can't shift the others (Gen 1/2 boxes are lists)
+    moved.filter(x => x.where === "box").sort((a, b) => (b.box - a.box) || (b.slot - a.slot)).forEach(x => from.save.remove(x));
     moved.filter(x => x.where === "party").sort((a, b) => b.slot - a.slot).forEach(x => from.save.remove(x));
     await commit(`Moved ${moved.length} Pokémon: ${from.game.title} → ${to.game.title}`, [from, to]);
     toast(`Moved ${moved.length} Pokémon to ${to.game.title}. Open the game to see them in the PC.`, 4500);
@@ -183,8 +188,15 @@ async function renderRestore() {
   $("#tab-restore").querySelectorAll("[data-restore]").forEach(btn => btn.onclick = async () => {
     if (btn.dataset.sure !== "1") { btn.dataset.sure = "1"; btn.textContent = "Tap again to restore"; return; }
     const b = list.find(x => x.key === btn.dataset.restore);
-    for (const s of b.saves) await Store.putSave({ id: s.id, data: new Uint8Array(s.data), updated: Date.now(), pendingImport: true });
-    await Store.deleteBackup(b.key);
+    // keep what's there now as a restore point too, so a restore can itself be undone
+    const current = [];
+    for (const s of b.saves) { const rec = await Store.getSave(s.id); if (rec && rec.data) current.push({ id: s.id, title: s.title, data: new Uint8Array(rec.data) }); }
+    const undo = current.length ? { key: Date.now() + "-undo", label: `Before restoring "${b.label}"`, created: Date.now(), saves: current } : null;
+    await Store.atomic(["saves", "backups"], (get) => {
+      if (undo) get("backups").put(undo);
+      for (const s of b.saves) get("saves").put({ id: s.id, data: new Uint8Array(s.data), updated: Date.now(), pendingImport: true });
+      get("backups").delete(b.key);
+    });
     toast("Restored. Open the games to load their previous saves.", 4500);
     renderRestore();
   });
@@ -198,7 +210,7 @@ const serialize = (mon) => JSON.parse(JSON.stringify(mon, (k, v) => v instanceof
 const deserialize = (o) => JSON.parse(JSON.stringify(o), (k, v) => v && v.__u8 ? new Uint8Array(v.__u8) : v);
 function send(msg) { if (tr.conn && tr.conn.open) tr.conn.send(msg); }
 
-function resetOffers() { tr.myOffer = null; tr.theirOffer = null; tr.theirCheck = null; tr.readyMe = false; tr.readyThem = false; }
+function resetOffers() { tr.myOffer = null; tr.theirOffer = null; tr.theirCheck = null; tr.readyMe = false; tr.readyThem = false; tr.preparedMe = false; tr.preparedThem = false; tr.readyKeys = null; tr.plan = null; }
 
 async function renderTrade() {
   const el = $("#tab-trade");
@@ -209,7 +221,7 @@ async function renderTrade() {
       <p class="hint">Open ${esc(tr.mine.game.title)} to find your new Pokémon in the PC. You can undo this in the Restore tab.</p></div>
       <button class="btn primary big" id="trAgain">Trade again</button>`;
     el.innerHTML = html;
-    $("#trAgain").onclick = async () => { tr.done = null; resetOffers(); tr.mine = await openGame(tr.mine.game); renderTrade(); };
+    $("#trAgain").onclick = async () => { tr.done = null; tr.committedMe = null; tr.committedThem = false; resetOffers(); tr.mine = await openGame(tr.mine.game); renderTrade(); };
     return;
   }
   html += `<p class="hint">Trade with someone else using Pocket Shelf, even if you're playing different games.</p>
@@ -223,7 +235,7 @@ async function renderTrade() {
   if (ready && !tr.conn) {
     if (joining) html += `<button class="btn primary big" id="trJoin">Connect to your friend</button>`;
     else if (tr.mode === "offline") html += `<div class="row2"><button class="btn primary big" id="trOffHost">Start trade</button><button class="btn ghost big" id="trOffJoin">Join a trade</button></div>`;
-    else html += `<button class="btn primary big" id="trHost">Start a trade</button><div id="trQR"></div>`;
+    else html += `<button class="btn primary big" id="trHost">Start a trade</button><div id="trQR">${tr.qrHtml || ""}</div>`;
   }
   if (tr.offStep && !tr.partner) {
     const step = tr.offStep === "hostShow"
@@ -252,7 +264,7 @@ async function renderTrade() {
     </div>${incoming && incoming.ok ? incoming.notes.map(n => `<div class="note">${esc(n)}</div>`).join("") : ""}`;
     const canTrade = mine && tr.theirOffer && incoming && incoming.ok && tr.theirCheck && tr.theirCheck.ok && !(mine.where === "party" && partyCount <= 1);
     if (mine && mine.where === "party" && partyCount <= 1) html += `<div class="note no">You can't trade your last party Pokémon.</div>`;
-    html += tr.readyMe ? `<p class="hint" style="text-align:center">${tr.readyThem ? "Trading…" : "Waiting for them to confirm…"}</p>`
+    html += tr.readyMe || tr.busy ? `<p class="hint" style="text-align:center">${tr.busy ? "Checking…" : tr.readyThem ? "Trading…" : "Waiting for them to confirm…"}</p>`
       : `<button class="btn primary big" id="trGo" ${canTrade ? "" : "disabled style='opacity:.4'"}>Trade!</button>`;
     html += `</div><div class="where">YOUR POKÉMON</div><div class="mons">${list.map(x => monCard(x, { selected: tr.myOffer && tr.myOffer.key === keyOf(x), gen: tr.mine.save.gen })).join("")}</div>`;
   }
@@ -278,19 +290,22 @@ function wire(conn) {
   tr.conn = conn;
   conn.on("open", () => { tr.offStep = null; send(info()); if (!tr.partner) tr.status = "Connected, waiting for your friend…"; renderTrade(); });
   conn.on("data", onMsg);
-  conn.on("close", () => { if (!tr.done) leave("Your friend left the trade."); });
+  conn.on("close", () => {
+    if (tr.committedMe && !tr.done) return finishTrade(false);      // we saved; we can't know if they did — say so clearly
+    if (!tr.done) leave("Your friend left the trade.");
+  });
 }
-async function startHost() {
+async function startHost(fixedId) {
   if (!navigator.onLine) return toast("Trading needs internet on both phones.");
-  const id = "pkshelf-trade-" + Math.random().toString(36).slice(2, 9);
+  const id = typeof fixedId === "string" ? fixedId : "pkshelf-trade-" + Math.random().toString(36).slice(2, 9);
   tr.peer = new Peer(id);
   tr.status = "Getting a trade code…"; renderTrade();
   tr.peer.on("open", () => {
     const url = new URL("pokecenter.html#trade=" + encodeURIComponent(id), location.href).href;
     const q = qrcode(0, "M"); q.addData(url); q.make();
     tr.status = "";
-    renderTrade();
-    $("#trQR").innerHTML = `<div class="qr">${q.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div><p class="hint" style="text-align:center">Your friend scans this with their phone camera.<br><span style="font-size:11px;word-break:break-all">${esc(url)}</span></p>`;
+    tr.qrHtml = `<div class="qr">${q.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div><p class="hint" style="text-align:center">Your friend scans this with their phone camera.<br><span style="font-size:11px;word-break:break-all">${esc(url)}</span></p>`;
+    renderTrade();                     // the QR lives in tr so a re-render (or a fast friend) can't lose it or hit a missing box
   });
   tr.peer.on("connection", (c) => { if (tr.conn) return c.close(); wire(c); });
   tr.peer.on("error", (e) => { tr.status = "Connection problem: " + (e.type || e.message); renderTrade(); });
@@ -328,69 +343,155 @@ function join(hostId) {
   if (!navigator.onLine) return toast("Trading needs internet on both phones.");
   tr.peer = new Peer();
   tr.status = "Connecting…"; renderTrade();
-  tr.peer.on("open", () => wire(tr.peer.connect(hostId, { reliable: true, serialization: "json" })));
-  tr.peer.on("error", (e) => { tr.status = e.type === "peer-unavailable" ? "Couldn't find that trade. Ask your friend for a new QR code." : "Connection problem: " + (e.type || e.message); renderTrade(); });
+  let attempt = 0;
+  const go = () => wire(tr.peer.connect(hostId, { reliable: true, serialization: "json" }));
+  tr.peer.on("open", go);
+  tr.peer.on("error", (e) => {
+    // the host may still be opening the trade (both phones arrive at once from Play together): try again a few times
+    if (e.type === "peer-unavailable" && attempt++ < 6) { tr.conn = null; setTimeout(go, 1500); return; }
+    tr.status = e.type === "peer-unavailable" ? "Couldn't find that trade. Ask your friend for a new QR code." : "Connection problem: " + (e.type || e.message); renderTrade();
+  });
 }
 function leave(msg) {
   try { tr.conn && tr.conn.close(); tr.peer && tr.peer.destroy(); } catch (e) {}
-  Object.assign(tr, { peer: null, conn: null, partner: null, consentMe: false, consentThem: false, status: msg || "", offline: null, offStep: null, offCode: null });
+  Object.assign(tr, { peer: null, conn: null, partner: null, consentMe: false, consentThem: false, status: msg || "", offline: null, offStep: null, offCode: null, committedMe: null, committedThem: false, qrHtml: "" });
   resetOffers();
   if (hostFromHash()) history.replaceState(null, "", "pokecenter.html#tab=trade");
   renderTrade();
 }
 function offer(key) {
+  if (tr.committedMe || tr.done) return;
   const x = tr.mine.save.list().find(y => keyOf(y) === key);
-  tr.myOffer = { key, mon: x.mon }; tr.readyMe = false; tr.readyThem = false; tr.theirCheck = null;
+  tr.myOffer = { key, mon: x.mon }; resetHandshake(); tr.theirCheck = null;
   send({ t: "offer", key, mon: serialize(x.mon) });
   renderTrade();
 }
-// dry-run the swap on a copy so we only say "ready" if our side will definitely succeed
+function resetHandshake() { tr.readyMe = false; tr.readyThem = false; tr.preparedMe = false; tr.preparedThem = false; tr.readyKeys = null; tr.plan = null; }
+
+// What the partner sends is only trusted after it passes these checks
+const RAW_SIZE = { pk1: 33, pk2: 32, pk3: 80, pk4: 136, pk5: 136 };
+function cleanIncoming(mon, gen) {
+  if (!mon || typeof mon !== "object") throw new Error("Received an unreadable Pokémon.");
+  const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+  if (!int(mon.species, 1, 649) || !D.species[mon.species]) throw new Error("Received an unknown Pokémon.");
+  if (!int(mon.level, 1, 100) || !int(mon.exp, 0, 2000000) || !Array.isArray(mon.moves) || mon.moves.length !== 4 || !mon.moves.every(m => int(m, 0, 559))) throw new Error("Received Pokémon data that doesn't look right.");
+  if (typeof mon.nickname !== "string" || mon.nickname.length > 12 || typeof mon.otName !== "string" || mon.otName.length > 12) throw new Error("Received a name that doesn't look right.");
+  if (!Array.isArray(mon.ivs) || mon.ivs.length !== 6 || !Array.isArray(mon.evs) || mon.evs.length !== 6) throw new Error("Received Pokémon data that doesn't look right.");
+  if (mon.isEgg) throw new Error("Eggs can't be traded yet.");
+  // raw bytes are only kept if they're the right format and size for the partner's game; otherwise rebuild from the fields
+  const fmt = "pk" + gen, u8ok = (a, n) => a instanceof Uint8Array && a.length === n;
+  if (mon.raw && !(mon.raw.format === fmt && u8ok(mon.raw.data, RAW_SIZE[fmt]) && (gen > 2 || (u8ok(mon.raw.ot, 11) && u8ok(mon.raw.nick, 11))))) mon.raw = null;
+  return mon;
+}
+const sameMon = (a, b) => a.species === b.species && a.tid === b.tid && Math.abs(a.exp - b.exp) <= 1;
+
+// Rehearse the swap on a fresh copy of the save; succeeds only if our side will definitely work
 async function dryRun() {
   const copy = await openGame(tr.mine.game);
+  if (!copy.save) throw new Error(copy.error || "Couldn't open your save.");
   const target = copy.save.list().find(y => keyOf(y) === tr.myOffer.key);
+  if (!target || monId(target.mon) !== monId(tr.myOffer.mon)) throw new Error("Your save changed since you picked. Pick again.");
   const r = PkSave.convert(tr.theirOffer.mon, tr.partner.gen, copy.save.gen, { trade: true, targetVersion: copy.save.version, partnerSpecies: target.mon.species });
   if (!r.ok) throw new Error(r.reason);
   copy.save.remove(target);
-  copy.save.insert(r.mon);
-  copy.save.toBytes();
+  const loc = copy.save.insert(r.mon);
+  // read the new Pokémon back: it must be exactly what was shown (catches bad raw data from the other phone)
+  const back = PkSave.open(copy.save.toBytes(), { system: copy.game.system, code: copy.game.code }).list().find(y => y.where === loc.where && y.box === loc.box && y.slot === loc.slot);
+  if (!back || !sameMon(back.mon, r.mon)) throw new Error("The Pokémon data didn't check out.");
   return { copy, r };
 }
 async function setReady() {
-  try { await dryRun(); } catch (e) { return toast("This trade can't be done: " + e.message, 5000); }
-  tr.readyMe = true; send({ t: "ready", mine: tr.myOffer.key, theirs: tr.theirOffer.key }); renderTrade(); maybeFinish();
+  if (tr.busy || tr.readyMe || tr.done) return;
+  tr.busy = true;
+  const keys = { mine: tr.myOffer.key, theirs: tr.theirOffer.key, theirId: monId(tr.theirOffer.mon) };   // lock in what you saw
+  try { await dryRun(); }
+  catch (e) { tr.busy = false; return toast("This trade can't be done: " + e.message, 5000); }
+  tr.busy = false;
+  if (!tr.myOffer || !tr.theirOffer || tr.myOffer.key !== keys.mine || tr.theirOffer.key !== keys.theirs || monId(tr.theirOffer.mon) !== keys.theirId)
+    return toast("The offer changed. Check it again, then tap Trade.", 4000);
+  tr.readyKeys = keys; tr.readyMe = true;
+  send({ t: "ready", mine: keys.mine, theirs: keys.theirs, id: monId(tr.myOffer.mon) });
+  renderTrade(); advance();
 }
-let finishing = false;
-async function maybeFinish() {
-  if (!(tr.readyMe && tr.readyThem) || finishing) return;
-  finishing = true;
+// Step 1: both ready → both rehearse and say "prepared". Step 2: both prepared → both save and say "committed".
+async function advance() {
+  if (tr.done || tr.stepping) return;
+  tr.stepping = true;
   try {
-    const { copy, r } = await dryRun();
-    const backup = await commit(`Traded with ${tr.partner.trainer} (${tr.partner.title})`, [copy]);
-    const sent = tr.myOffer.mon;
-    tr.done = { text: `You sent ${sent.isNicknamed ? sent.nickname : spName(sent.species)} and received ${r.mon.isNicknamed ? r.mon.nickname : spName(r.mon.species)}.`, notes: r.notes, backup: backup.key };
-    send({ t: "done" });
-  } catch (e) { toast("Trade failed on this phone: " + e.message + ". Nothing was changed here.", 7000); send({ t: "failed", reason: e.message }); resetOffers(); }
-  finishing = false;
+    if (tr.readyMe && tr.readyThem && !tr.preparedMe) {
+      tr.plan = await dryRun();
+      tr.preparedMe = true; send({ t: "prepared", mine: tr.readyKeys.mine, theirs: tr.readyKeys.theirs });
+    }
+    if (tr.preparedMe && tr.preparedThem && !tr.committedMe) {
+      const { copy, r } = tr.plan;
+      const backup = await commit(`Traded with ${tr.partner.trainer} (${tr.partner.title})`, [copy]);
+      tr.committedMe = { backup, r };
+      send({ t: "committed" });
+      clearTimeout(tr.ackTimer);
+      tr.ackTimer = setTimeout(() => { if (!tr.committedThem && !tr.done) finishTrade(false); }, 20000);
+      if (tr.committedThem) finishTrade(true);
+    }
+  } catch (e) {
+    toast("Trade failed on this phone: " + e.message + ". Nothing was changed here.", 7000);
+    send({ t: "failed", reason: e.message }); resetHandshake();
+  }
+  tr.stepping = false;
   renderTrade();
+}
+function finishTrade(confirmed) {
+  if (tr.done || !tr.committedMe) return;
+  clearTimeout(tr.ackTimer);
+  const { backup, r } = tr.committedMe, sent = tr.myOffer.mon;
+  tr.done = { text: `You sent ${sent.isNicknamed ? sent.nickname : spName(sent.species)} and received ${r.mon.isNicknamed ? r.mon.nickname : spName(r.mon.species)}.`,
+    notes: confirmed ? r.notes : r.notes.concat([`Couldn't confirm that ${tr.partner.trainer}'s phone finished. If they didn't get your Pokémon, undo this trade in the Restore tab.`]), backup: backup.key };
+  resetHandshake();
+  renderTrade();
+}
+// The other phone failed after this one already saved: put this save back automatically
+async function rollBack(reason) {
+  const { backup } = tr.committedMe;
+  await Store.atomic(["saves", "backups"], (get) => {
+    for (const s of backup.saves) get("saves").put({ id: s.id, data: new Uint8Array(s.data), updated: Date.now(), pendingImport: true });
+    get("backups").delete(backup.key);
+  });
+  tr.committedMe = null; clearTimeout(tr.ackTimer); resetHandshake();
+  tr.mine = await openGame(tr.mine.game);
+  toast(`The trade failed on ${tr.partner.trainer}'s phone (${reason}), so it was undone here too. Nothing changed.`, 8000);
 }
 function onMsg(raw) {
-  const msg = typeof raw === "string" ? JSON.parse(raw) : raw;
-  if (msg.t === "hello") { tr.partner = msg; tr.status = ""; }
-  if (msg.t === "consent") { if (!msg.yes) return leave(`${tr.partner?.trainer || "Your friend"} said no.`); tr.consentThem = true; }
-  if (msg.t === "offer") {
-    tr.theirOffer = { key: msg.key, mon: deserialize(msg.mon) }; tr.readyMe = false; tr.readyThem = false;
-    const mine = tr.myOffer ? tr.mine.save.list().find(y => keyOf(y) === tr.myOffer.key) : null;
-    const r = PkSave.convert(tr.theirOffer.mon, tr.partner.gen, tr.mine.save.gen, { trade: true, targetVersion: tr.mine.save.version, partnerSpecies: mine?.mon.species });
-    send({ t: "check", ok: r.ok, reason: r.ok ? "" : `${tr.mine.save.trainer.name}'s game can't take it: ${r.reason}` });
-  }
-  if (msg.t === "check") tr.theirCheck = msg;
-  if (msg.t === "ready") {
-    if (tr.myOffer && tr.theirOffer && msg.mine === tr.theirOffer.key && msg.theirs === tr.myOffer.key) { tr.readyThem = true; maybeFinish(); }
-  }
-  if (msg.t === "failed") { toast(`The trade failed on ${tr.partner.trainer}'s phone (${msg.reason}). If yours finished, undo it in Restore.`, 8000); }
+  let msg;
+  try { msg = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { return; }
+  if (!msg || typeof msg.t !== "string") return;
+  try {
+    if (msg.t === "hello") {
+      if (!Number.isInteger(msg.gen) || msg.gen < 1 || msg.gen > 5) return;
+      tr.partner = { t: "hello", trainer: String(msg.trainer || "Trainer").slice(0, 12), title: String(msg.title || "a game").slice(0, 60), gen: msg.gen }; tr.status = "";
+    }
+    if (!tr.partner) return;                                   // nothing else counts before we know who it is
+    if (msg.t === "consent") { if (!msg.yes) return leave(`${tr.partner.trainer} said no.`); tr.consentThem = true; }
+    if (msg.t === "offer" && !tr.committedMe && !tr.done) {
+      let check;
+      try {
+        const mon = cleanIncoming(deserialize(msg.mon), tr.partner.gen);
+        tr.theirOffer = { key: String(msg.key), mon }; resetHandshake();
+        const mine = tr.myOffer ? tr.mine.save.list().find(y => keyOf(y) === tr.myOffer.key) : null;
+        const r = PkSave.convert(mon, tr.partner.gen, tr.mine.save.gen, { trade: true, targetVersion: tr.mine.save.version, partnerSpecies: mine?.mon.species });
+        check = { t: "check", ok: r.ok, reason: r.ok ? "" : `${tr.mine.save.trainer.name || "Your friend"}'s game can't take it: ${r.reason}` };
+      } catch (e) { tr.theirOffer = null; check = { t: "check", ok: false, reason: e.message }; }
+      send(check);
+    }
+    if (msg.t === "check") tr.theirCheck = { ok: !!msg.ok, reason: String(msg.reason || "").slice(0, 200) };
+    if (msg.t === "ready" && tr.myOffer && tr.theirOffer && msg.mine === tr.theirOffer.key && msg.theirs === tr.myOffer.key && msg.id === monId(tr.theirOffer.mon)) { tr.readyThem = true; advance(); }
+    if (msg.t === "prepared" && tr.readyKeys && msg.mine === tr.readyKeys.theirs && msg.theirs === tr.readyKeys.mine) { tr.preparedThem = true; advance(); }
+    if (msg.t === "committed") { tr.committedThem = true; if (tr.committedMe) finishTrade(true); }
+    if (msg.t === "failed") {
+      const reason = String(msg.reason || "unknown problem").slice(0, 120);
+      if (tr.committedMe && !tr.committedThem && !tr.done) { rollBack(reason); }
+      else if (!tr.done) { resetHandshake(); toast(`The trade didn't go through on ${tr.partner.trainer}'s phone (${reason}). Nothing changed.`, 6000); }
+    }
+  } catch (e) { console.warn("Trade message ignored:", e); }
   renderTrade();
 }
-
 // ---------- tabs ----------
 function showTab(name) {
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
@@ -403,7 +504,13 @@ addEventListener("hashchange", () => { if (hostFromHash() || /tab=trade/.test(lo
 (async () => {
   registerSW();
   await loadGames();
-  showTab(hostFromHash() || /tab=trade/.test(location.hash) ? "trade" : "move");
+  const hp = new URLSearchParams(location.hash.slice(1));
+  showTab(hostFromHash() || hp.get("hostid") || /tab=trade/.test(location.hash) ? "trade" : "move");
+  // arriving from "Play together": pick the game and connect straight away
+  if (hp.get("game") && games.some(g => g.id === hp.get("game"))) {
+    tr.gameId = hp.get("game"); tr.mine = await openGame(games.find(g => g.id === tr.gameId)); renderTrade();
+    if (tr.mine && tr.mine.save) { if (hp.get("hostid")) startHost(hp.get("hostid")); else if (hostFromHash()) join(hostFromHash()); }
+  }
 })();
 </script>
 </body>

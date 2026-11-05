@@ -21,6 +21,9 @@
 <div class="auto-banner" id="autoBanner"></div>
 <div class="switcher" id="autoSheet"><div class="sheet"></div></div>
 <div class="switcher" id="padSheet"><div class="sheet"></div></div>
+<div class="switcher" id="ghostSheet"><div class="sheet"></div></div>
+<button class="btn" id="ghostInteract" hidden></button>
+<span id="ghostBadge" hidden></span>
 <div id="stage"><div id="game"></div></div>
 
 <div class="switcher" id="switcher"><div class="sheet">
@@ -31,13 +34,21 @@
 
 <script src="lib.js"></script>
 <script src="auto.js"></script>
+<script src="pkdata.js"></script>
+<script src="pksave-core.js"></script>
+<script src="pksave-gen3.js"></script>
+<script src="gamemem.js"></script>
+<script src="nav.js"></script>
+<script src="jsqr.js"></script>
+<script src="offline.js"></script>
+<script src="ghosts.js"></script>
 <script src="peerjs.min.js"></script>
 <script src="qrcode.js"></script>
 <script src="remote.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get("id");
-let game = null, lastSaveSig = "", sessionStart = Date.now(), lastTick = Date.now();
+let game = null, saveBlocked = false, lastSaveSig = "", sessionStart = Date.now(), lastTick = Date.now();
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function sig(u8) { let h = 2166136261; for (let i = 0; i < u8.length; i += 7) h = Math.imul(h ^ u8[i], 16777619); return u8.length + ":" + (h >>> 0); }
@@ -46,9 +57,9 @@ function gm() { return window.EJS_emulator && window.EJS_emulator.gameManager; }
 async function storeSave(data) {
   if (!data || !data.length) return;
   const s = sig(data);
-  if (s === lastSaveSig) return;
-  lastSaveSig = s;
+  if (s === lastSaveSig || saveBlocked) return;
   await Store.putSave({ id, data: new Uint8Array(data), updated: Date.now() });
+  lastSaveSig = s;                       // only after it's really written, so a failed write is retried next time
   $("#saved").textContent = "Saved ✓";
   clearTimeout(storeSave._t); storeSave._t = setTimeout(() => $("#saved").textContent = "", 2500);
 }
@@ -170,11 +181,20 @@ function fail(msg) {
           await Store.putSave({ id, data: backup.data, updated: Date.now() });
           EJS_emulator.displayMessage(backup.pendingImport ? "Imported save loaded" : "Save restored", 3000);
         }
-      } catch (e) { console.warn("Save restore skipped:", e); }
+      } catch (e) {
+        console.warn("Save restore failed:", e);
+        const b = await Store.getSave(id).catch(() => null);
+        if (b && b.pendingImport) {
+          // Don't let the game's old save overwrite the one waiting to be loaded
+          saveBlocked = true;
+          EJS_emulator.displayMessage("Couldn't load the moved/traded save. Nothing was overwritten — go back and open the game again.", 8000);
+        }
+      }
       lastTick = Date.now();
       setInterval(() => { flush(); tickPlaytime(); }, 15000);
-      PocketAutoInit({ getGame: () => game, saveGame: (g) => Store.putGame(g) });
+      PocketAutoInit({ getGame: () => game, saveGame: (g) => Store.putGame(g), getRom: async () => new Uint8Array(await rom.data.arrayBuffer()) });
       PocketRemoteInit({ getGame: () => game });
+      PocketGhosts.init({ getGame: () => game, getMem: () => window.PocketGameMem(), leaveTo: (url) => leave(url) });
     }
   });
 

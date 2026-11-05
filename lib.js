@@ -43,10 +43,37 @@ const Store = {
   putBackup: (b) => tx("backups", "readwrite", s => reqP(s.put(b))),
   allBackups: () => tx("backups", "readonly", s => reqP(s.getAll())),
   deleteBackup: (key) => tx("backups", "readwrite", s => reqP(s.delete(key))),
+  // Several stores changed together: either every write lands or none do (one IndexedDB transaction)
+  async atomic(stores, fn) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction(stores, "readwrite");
+      const get = (name) => t.objectStore(name);
+      let result;
+      try { result = fn(get); } catch (e) { try { t.abort(); } catch (e2) {} db.close(); return reject(e); }
+      t.oncomplete = () => { db.close(); resolve(result); };
+      t.onerror = () => { db.close(); reject(t.error); };
+      t.onabort = () => { db.close(); reject(t.error || new Error("Saving was cancelled")); };
+    });
+  },
+  // Restore point + new saves for every game involved, written together
+  commitSaves(backup, saves) {
+    return Store.atomic(["saves", "backups"], (get) => {
+      if (backup) get("backups").put(backup);
+      for (const s of saves) get("saves").put(s);
+    });
+  },
   async deleteGame(id) {
-    await tx("games", "readwrite", s => reqP(s.delete(id)));
-    await tx("roms", "readwrite", s => reqP(s.delete(id)));
-    await tx("saves", "readwrite", s => reqP(s.delete(id)));
+    const backups = await Store.allBackups();
+    await Store.atomic(["games", "roms", "saves", "backups"], (get) => {
+      get("games").delete(id); get("roms").delete(id); get("saves").delete(id);
+      // restore points that mention this game: drop the game from them, or drop the point if nothing is left
+      for (const b of backups) {
+        if (!b.saves.some(x => x.id === id)) continue;
+        const rest = b.saves.filter(x => x.id !== id);
+        if (rest.length) get("backups").put({ ...b, saves: rest }); else get("backups").delete(b.key);
+      }
+    });
   }
 };
 

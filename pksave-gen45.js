@@ -248,14 +248,15 @@
         if (pc <= 1) throw new Error("Can't remove the last Pokémon in the party");
         // Encrypted structs are position-independent: slide the raw bytes up.
         for (let i = slot + 1; i < pc; i++) this.buf.copyWithin(this.partyOff(i - 1), this.partyOff(i), this.partyOff(i) + this.partySize);
-        this.buf.fill(0, this.partyOff(pc - 1), this.partyOff(pc - 1) + this.partySize);
+        this.buf.set(encrypt45(new Uint8Array(this.partySize)), this.partyOff(pc - 1));   // encrypted blank, as PKHeX writes
         this.setPartyCount(pc - 1);
         return;
       }
       if (where === 'box') {
         if (!(box >= 0 && box < this.boxCount && slot >= 0 && slot < this.boxSlots)) throw new Error('Bad box slot');
         const o = this.boxOff(box, slot);
-        this.buf.fill(0, o, o + SIZE_STORED);
+        // An emptied slot holds an *encrypted* blank Pokémon (what PKHeX writes), not raw zeros
+        this.buf.set(encrypt45(new Uint8Array(SIZE_STORED)), o);
         return;
       }
       throw new Error('Unknown location: ' + where);

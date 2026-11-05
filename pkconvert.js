@@ -30,6 +30,7 @@
   function why(mon, gen) {
     const d = D();
     if (mon.isEgg) return "Eggs can't be moved yet.";
+    if (!Number.isInteger(mon.species) || !d.species[mon.species]) return `Unknown Pokémon (#${mon.species}).`;
     if (mon.species > d.maxSpecies[gen]) return `${d.species[mon.species].name} doesn't exist in Gen ${gen} games.`;
     return null;
   }

@@ -1,5 +1,5 @@
 // Pocket Shelf offline cache — every app + emulator file is stored on install
-const CACHE = "pocket-shelf-76811daff2";
+const CACHE = "pocket-shelf-e3884fdfc1";
 const FILES = [
  "./",
  "GameManager.js",
@@ -15,7 +15,9 @@ const FILES = [
  "emulator.js",
  "extract7z.js",
  "extractzip.js",
+ "gamemem.js",
  "gamepad.js",
+ "ghosts.js",
  "icon-192.png",
  "icon-512.png",
  "index.html",
@@ -29,6 +31,7 @@ const FILES = [
  "mgba-legacy-wasm.data",
  "mgba-wasm.data",
  "mgba.json",
+ "nav.js",
  "nipplejs.js",
  "offline.js",
  "peerjs.min.js",
@@ -48,7 +51,7 @@ const FILES = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));

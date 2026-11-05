@@ -154,6 +154,99 @@
     }
   }
 
+  // ---------- Train mode (FireRed / LeafGreen / Emerald + hacks): grind, flee at low HP, heal, return ----------
+  const DIRS = ["LEFT", "RIGHT", "UP", "DOWN"];
+  const lowHp = (hp, maxHp) => hp < (maxHp >= 30 ? 15 : Math.ceil(maxHp / 2));
+  function needsHeal(m) {
+    const party = m.party().filter(Boolean);
+    if (!party.length) return false;
+    if (m.inBattle()) {                                    // the active Pokémon's battle HP is the freshest number
+      const me = m.battleMon(0);
+      if (me.maxHp && lowHp(me.hp, me.maxHp)) return true;
+    }
+    return party.some(p => !p.isEgg && p.maxHp && lowHp(p.hp, p.maxHp));
+  }
+  const FACING = { DOWN: 1, UP: 2, LEFT: 3, RIGHT: 4 };
+  async function stepTo(m, dir, r) {                       // one tile in the field; true if the player moved
+    const before = m.location();
+    if (before.facing !== FACING[dir]) { await holdFor(dir, 60); await sleep(60); }   // turn first
+    await holdFor(dir, 200);
+    for (let i = 0; i < 25 && m.location().moving && !r.stop; i++) await sleep(20);
+    const after = m.location();
+    return after.x !== before.x || after.y !== before.y || after.mapNum !== before.mapNum || after.mapGroup !== before.mapGroup;
+  }
+  async function train() {
+    const m = await getMem();
+    const say = (html) => { banner(html, `<button class="ab-btn" id="abClose">OK</button>`); $("#abClose").onclick = hideBanner; };
+    if (!m.supported) return say(esc(m.reason));
+    if (!m.profile.rom) m.learnOverworld();               // hacks: we start from the field, so remember what "field" looks like
+    if (!m.inOverworld()) return say("Start Train while walking around (not in a battle or menu).");
+    if (!begin("training")) return;
+    const r = run;
+    const home = m.location();
+    let dirIdx = 0, battles = 0, wasBattle = false, heals = 0, lastLearn = 0, trip = {};
+    setFast(true);
+    const show = (line) => { banner(`<b>Training</b> · ${battles} battle${battles === 1 ? "" : "s"}${heals ? ` · healed ${heals}×` : ""}<br><small>${esc(line)}</small>`, `<button class="ab-btn" id="abStop">Stop</button>`); const b = $("#abStop"); if (b) b.onclick = () => stopAuto(false); };
+    const pause = (why) => { stopAuto(true); say(`<b>Training paused</b><br><small>${esc(why)}</small>`); };
+    show("Walking in the grass…");
+    while (!r.stop) {
+      if (m.inBattle()) {
+        if (!wasBattle) { battles++; wasBattle = true; }
+        const low = needsHeal(m), trainer = m.isTrainerBattle();
+        if (m.isLearningMove()) {                          // decline new moves: "No" to deleting one, then "Yes" to stop learning
+          show("Skipping a new move so nothing gets forgotten");
+          if (Date.now() - lastLearn > 900) { await tap("B", 70, 450); await tap("A", 70, 450); lastLearn = Date.now(); } else await sleep(150);
+        } else if (low && !trainer) {
+          show("HP is low, running away");
+          if (m.setActionCursor(3)) {                      // RUN; the two B presses answer "No" to "Use next Pokémon?"
+            await tap("B", 60, 160); await tap("B", 60, 160); await tap("A", 60, 220);
+          } else {                                         // unknown layout: walk the cursor to RUN with buttons
+            await tap("B", 60, 160); await tap("B", 60, 160);
+            await tap("UP", 60, 120); await tap("LEFT", 60, 120); await tap("DOWN", 60, 120); await tap("RIGHT", 60, 120); await tap("A", 60, 220);
+          }
+        } else {
+          const best = m.bestMoveIndex();
+          show(`${trainer ? "Trainer battle" : "Wild battle"}: using ${m.canWrite() ? (PkData.moves[m.battleMon(0).moves[best]] || "a move") : "the first move"}`);
+          if (m.setActionCursor(0) && m.setMoveCursor(best)) await tap("A", 60, 200);   // FIGHT → best move
+          else {                                           // unknown layout: FIGHT, then the first move
+            await tap("UP", 60, 100); await tap("LEFT", 60, 100); await tap("A", 60, 250);
+            await tap("UP", 60, 100); await tap("LEFT", 60, 100); await tap("A", 60, 200);
+          }
+        }
+        continue;
+      }
+      if (wasBattle) { wasBattle = false; await sleep(400); }
+      if (!m.inOverworld()) {                              // text boxes, evolutions, the party menu after a faint…
+        if (m.isLearningMove()) { await tap("B", 70, 400); await tap("A", 70, 400); continue; }
+        const party = m.party(), healthy = party.findIndex(p => p && p.hp > 0);
+        if (healthy > 0 && !m.setPartyMenuSlot(healthy)) {  // trainer battle faint: send out the first healthy Pokémon
+          await tap("RIGHT", 60, 120); for (let i = 1; i < healthy; i++) await tap("DOWN", 60, 120);
+        }
+        await tap("A", 60, 260);
+        continue;
+      }
+      // ---- in the field ----
+      if (trip.phase || needsHeal(m)) {
+        if (!window.PocketNav || !m.mapGroupsAddr) return pause("A Pokémon is low on HP. Heal it, then start Train again.");
+        const res = await PocketNav.healAndReturn(m, { stepTo: (dir) => stepTo(m, dir, r), tap, sleep, stopped: () => r.stop, status: show }, home, trip);
+        if (r.stop) break;
+        if (res.interrupted) continue;                     // a battle on the way: handled above, then the trip carries on
+        if (!res.ok) return pause(res.reason);
+        heals++; trip = {}; show("Back to training");
+        continue;
+      }
+      // pace back and forth near the starting spot; turn round at 3 tiles away or when something's in the way
+      const here = m.location();
+      if (here.mapNum !== home.mapNum || here.mapGroup !== home.mapGroup) return pause("Ended up on a different map.");
+      let dir = DIRS[dirIdx];
+      if (Math.abs(here.x - home.x) >= 3) dir = here.x > home.x ? "LEFT" : "RIGHT";
+      else if (Math.abs(here.y - home.y) >= 3) dir = here.y > home.y ? "UP" : "DOWN";
+      const moved = await stepTo(m, dir, r);
+      dirIdx = moved ? (DIRS.indexOf(dir) ^ 1) : (DIRS.indexOf(dir) + 1) % 4;   // moved: walk back the other way · blocked: try another direction
+      if (!moved && Math.random() < 0.3) await tap("A", 60, 200);  // clears any sign or text that popped up
+    }
+  }
+
   // ---------- online AI play ----------
   const SYSTEM_PROMPT = `You are an expert Pokémon player controlling a Game Boy / GBA / DS emulator one small step at a time.
 Each turn you get the current screen and must call press_buttons with a SHORT sequence (1–8 presses) toward the goal, then you will see the new screen.
@@ -240,9 +333,11 @@ Keep your notes updated with progress (badges, team, current objective, where yo
         body: JSON.stringify(body)
       });
       const out = await res.json().catch(() => ({}));
-      if (res.status === 429 && attempt < 4) {          // free-tier rate limit: wait and retry
-        const wait = 8000 * (attempt + 1);
-        if (onWait) onWait(wait);
+      // 429 = free-tier speed limit: wait and retry the same model.
+      // 500/503 = this model is busy ("high demand"): fail fast so the caller tries the next model.
+      if (res.status === 429 && attempt < 3) {
+        const wait = 6000 * (attempt + 1);
+        if (onWait) onWait(wait, res.status);
         await sleep(wait);
         continue;
       }
@@ -271,7 +366,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     const isDS = game.system === "nds";
     const tool = toolDef(isDS);
     const history = [];
-    let steps = 0, tokens = 0, lastPNG = null, stuck = 0;
+    let steps = 0, tokens = 0, lastPNG = null, stuck = 0, mem;
 
     const show = (line) => banner(
       `<b>AI playing</b> · step ${steps}<br><small>${esc(line || "Thinking…")}</small>`,
@@ -298,24 +393,67 @@ Keep your notes updated with progress (badges, team, current objective, where yo
       setRunning(false);                      // freeze the game while the AI thinks
       const image = await pngToBase64Upscaled(png, 2);
       const notes = game.aiNotes || "(none yet)";
+      // Exact game state read from memory (FireRed / LeafGreen / Emerald + hacks) — far more reliable than the screenshot alone
+      let liveInfo = "";
+      try {
+        if (mem === undefined) mem = game.system === "gba" ? await getMem() : null;
+        if (mem && mem.supported) {
+          const x = mem.snapshot(), L = x.location;
+          const lines = [`LIVE GAME DATA (read from memory, trust this over the picture):`,
+            `State: ${x.state}. Map ${L.mapGroup}.${L.mapNum}, position x=${L.x} y=${L.y}, facing ${["?", "down", "up", "left", "right"][L.facing] || "?"}.`,
+            `Last Pokémon Center: map ${L.heal.mapGroup}.${L.heal.mapNum}.`,
+            `Party: ${x.party.map(p => p ? `${p.name} Lv${p.level} ${p.hp}/${p.maxHp}HP` : "?").join(", ") || "none"}.`];
+          if (x.state === "battle") {
+            const me = mem.battleMon(0), foe = mem.battleMon(1);
+            lines.push(`Battle: your ${(PkData.species[me.species] || {}).name} ${me.hp}/${me.maxHp}HP vs ${(PkData.species[foe.species] || {}).name} Lv${foe.level} ${foe.hp}/${foe.maxHp}HP${mem.isTrainerBattle() ? " (trainer battle, can't run)" : " (wild)"}.`);
+            lines.push(`Your moves: ${me.moves.map((mv, i) => mv ? `${i + 1}. ${PkData.moves[mv]} (${me.pp[i]} PP)` : "").filter(Boolean).join("; ")}. Strongest choice by type matchup: move ${mem.bestMoveIndex() + 1}.`);
+            lines.push(`Battle menu: FIGHT top-left, BAG top-right, POKéMON bottom-left, RUN bottom-right.`);
+          }
+          liveInfo = lines.join("\n");
+        }
+      } catch (e) { liveInfo = ""; }
       const text = [
         `Game: ${game.title} (${isDS ? "Nintendo DS — top and bottom screen stacked" : game.system === "gb" ? "Game Boy" : "Game Boy Advance"}).`,
         `Goal: ${game.aiGoal || "Progress through the main story."}`,
         `Your notes so far:\n${notes}`,
         history.length ? `Your recent steps (oldest first):\n${history.map((h, i) => `${i + 1}. ${h}`).join("\n")}` : "This is your first step this session.",
         stuck >= 2 ? `WARNING: the screen has not changed for ${stuck} steps — you are likely stuck; try a different approach.` : "",
+        liveInfo,
         "Choose your next presses."
       ].filter(Boolean).join("\n\n");
 
       let out;
       try {
-        out = await callGemini({ key, model, system: SYSTEM_PROMPT, tool, imageB64: image, text,
-          onWait: (ms) => { banner(`<b>AI playing</b> · step ${steps}<br><small>Free-tier speed limit, waiting ${Math.round(ms / 1000)}s…</small>`, `<button class="ab-btn" id="abStop">Stop</button>`); wireStop(); } });
+        const onWait = (ms, status) => { banner(`<b>AI playing</b> · step ${steps}<br><small>${status === 429 ? "Free-tier speed limit" : "Gemini is busy"}, retrying in ${Math.round(ms / 1000)}s…</small>`, `<button class="ab-btn" id="abStop">Stop</button>`); wireStop(); };
+        // Try the saved model first, then every other Gemini model on this key, until one answers.
+        let order = [model];
+        let lastErr = null;
+        for (let round = 0; round < 2 && !out && !r.stop; round++) {
+          for (let i = 0; i < order.length && !r.stop; i++) {
+            const m = order[i];
+            if (m !== model || round > 0) { banner(`<b>AI playing</b> · step ${steps}<br><small>${esc(model)} is busy, trying ${esc(m)}…</small>`, `<button class="ab-btn" id="abStop">Stop</button>`); wireStop(); }
+            try {
+              out = await callGemini({ key, model: m, system: SYSTEM_PROMPT, tool, imageB64: image, text, onWait });
+              if (m !== model) { model = m; ls.set("ps_gemini_model", m); }
+              lastErr = null; break;
+            } catch (e) {
+              lastErr = e;
+              if (![500, 503, 404].includes(e.status)) throw e;          // a real error (bad key, daily limit) — stop
+              if (order.length === 1) { try { order = order.concat((await listGeminiModels(key)).filter(id => id !== model)); } catch (e2) {} }
+            }
+          }
+          if (!out && !r.stop && round === 0) {                          // every model was busy: short pause, then one more lap
+            banner(`<b>AI playing</b> · step ${steps}<br><small>All Gemini models are busy, trying again in 15s…</small>`, `<button class="ab-btn" id="abStop">Stop</button>`); wireStop();
+            await sleep(15000);
+          }
+        }
+        if (!out && lastErr) throw lastErr;
       } catch (e) {
         if (r.stop) break;
         const why = (e.status === 400 && /api key/i.test(e.message)) || e.status === 401 || e.status === 403 ? "Your Gemini API key was rejected. Check it in AI settings."
           : e.status === 404 ? "That Gemini model isn't available any more. Open AI settings to pick another."
           : e.status === 429 ? "Gemini's daily free limit is used up. It resets overnight (Pacific time)."
+          : [500, 503].includes(e.status) ? "Every Gemini model on your key is busy right now. Try again in a few minutes."
           : !navigator.onLine ? "You went offline." : e.message;
         stopAuto(true);
         banner(`<b>AI stopped</b><br><small>${esc(why)}</small>`, `<button class="ab-btn" id="abClose">OK</button>`);
@@ -348,6 +486,42 @@ Keep your notes updated with progress (badges, team, current objective, where yo
 
   // ---------- sheet UI ----------
   let ctxRef = null;
+
+  // ---- live game memory (FireRed / LeafGreen / Emerald + hacks) ----
+  let memPromise = null;
+  async function getMem() {
+    if (!memPromise) memPromise = (async () => window.PocketMem.attach(gm(), await ctxRef.getRom()))().catch(e => ({ supported: false, reason: e.message }));
+    const m = await memPromise;
+    if (!m.supported) memPromise = null;                 // try again next time (e.g. still on the title screen)
+    return m;
+  }
+  window.PocketGameMem = getMem;
+
+  let infoTimer = null;
+  async function showInfo() {
+    const s = $("#autoSheet"), box = s.querySelector(".sheet");
+    box.innerHTML = `<h3>Game info <small style="color:var(--accent);font-size:12px">beta</small></h3><div class="sub">Live readings from the game's memory. If something here looks wrong, send Claude a screenshot.</div><div id="infoBody" class="d">Reading the game's memory…</div>
+      <div class="actions"><button class="btn ghost full" data-a="close">Close</button></div>`;
+    box.onclick = (e) => { if (e.target.closest("[data-a='close']")) { clearInterval(infoTimer); closeSheet(); } };
+    if (!s.classList.contains("open")) s.classList.add("open");
+    setRunning(true);                                    // keep the game running so the numbers update
+    const m = await getMem();
+    const body = $("#infoBody");
+    if (!m.supported) { body.textContent = m.reason; return; }
+    const bar = (hp, mx) => `<span style="display:inline-block;width:70px;height:6px;border-radius:3px;background:#333;vertical-align:middle;margin:0 6px"><span style="display:block;height:100%;width:${mx ? Math.round(100 * hp / mx) : 0}%;border-radius:3px;background:${hp / mx < 0.25 ? "#ff6b6b" : hp / mx < 0.5 ? "#ffcb3d" : "#47d18c"}"></span></span>`;
+    const draw = () => {
+      try {
+        const x = m.snapshot(), L = x.location;
+        body.innerHTML = `<div class="row"><div><div class="k">${esc(x.game)}${m.relocated ? " · memory found by search" : ""}</div><div class="d">Now: ${esc(x.state)}</div></div></div>
+          <div class="row"><div><div class="k">Position</div><div class="d">Map ${L.mapGroup}.${L.mapNum} · x ${L.x}, y ${L.y} · facing ${["", "down", "up", "left", "right"][L.facing] || L.facing}</div>
+          <div class="d">Last Pokémon Center: map ${L.heal.mapGroup}.${L.heal.mapNum} (x ${L.heal.x}, y ${L.heal.y})</div></div></div>
+          <div class="row" style="display:block"><div class="k" style="margin-bottom:4px">Party</div>${x.party.length ? x.party.map(p => p ? `<div class="d">${esc(p.name)} Lv ${p.level}${bar(p.hp, p.maxHp)}${p.hp}/${p.maxHp} HP</div>` : `<div class="d">(unreadable slot)</div>`).join("") : `<div class="d">${esc(m.partyWarning || "No Pokémon yet")}</div>`}</div>
+          ${x.enemy && x.enemy.maxHp ? `<div class="row"><div><div class="k">Opponent</div><div class="d">${esc((PkData.species[x.enemy.species] || {}).name || "#" + x.enemy.species)} Lv ${x.enemy.level}${bar(x.enemy.hp, x.enemy.maxHp)}${x.enemy.hp}/${x.enemy.maxHp} HP</div></div></div>` : ""}`;
+      } catch (e) { body.textContent = "Reading failed: " + e.message; }
+    };
+    if (!m.profile.rom) m.learnOverworld();              // hacks: assume we're in the overworld when this opens from the field
+    draw(); clearInterval(infoTimer); infoTimer = setInterval(draw, 500);
+  }
   function openSheet(view) {
     const s = $("#autoSheet");
     const online = navigator.onLine;
@@ -409,6 +583,9 @@ Keep your notes updated with progress (badges, team, current objective, where yo
           <span><b>AI plays</b><br><small>${online ? (key ? `Gemini decides every move${model ? " · " + esc(model) : ""}` : "Set up once with a free Gemini key") : "Needs internet"}</small></span>
         </button>
         ${key ? `<button class="link-btn" data-a="ai-setup">AI settings & goal</button>` : ""}
+        ${game.system === "gba" ? `<button class="auto-item" data-a="info"><span class="ai-ic">ⓘ</span><span><b>Game info</b> <small style="color:var(--accent)">beta</small><br><small>What Pocket Shelf can read from the game right now</small></span></button>` : ""}
+        ${game.system === "gba" ? `<button class="auto-item" data-a="train"><span class="ai-ic">⚡</span><span><b>Train</b> <small style="color:var(--accent)">beta</small><br><small>Grinds here, runs at low HP, heals at the Pokémon Center and comes back. FireRed, LeafGreen, Emerald &amp; hacks</small></span></button>` : ""}
+        ${game.system === "gba" ? `<button class="auto-item" data-a="together"><span class="ai-ic">👥</span><span><b>Play together</b> <small style="color:var(--accent)">beta</small><br><small>See friends walking around your world, wave and trade. Up to 4 players</small></span></button>` : ""}
         <button class="auto-item" data-a="advance"><span class="ai-ic">≫</span><span><b>Auto-advance</b><br><small>Mashes A at high speed to skip dialogue</small></span></button>
         <button class="auto-item" data-a="grind"><span class="ai-ic">⚔</span><span><b>Grind in grass</b><br><small>Stand in tall grass first. Walks and battles with your first move</small></span></button>
         <div class="auto-item" style="cursor:default"><span class="ai-ic">➜</span><span style="flex:1"><b>Auto-run</b><br><small>Runs until you hit something</small></span>
@@ -419,6 +596,9 @@ Keep your notes updated with progress (badges, team, current objective, where yo
         if (a === "ai-setup") return openSheet("ai-setup");
         if (a === "ai") { if (!key) return openSheet("ai-setup"); closeSheet(true); return aiPlay(ctxRef); }
         closeSheet(true);
+        if (a === "info") return showInfo();
+        if (a === "train") { closeSheet(true); return train(); }
+        if (a === "together") { closeSheet(true); return window.PocketGhosts && PocketGhosts.open(); }
         if (a === "advance") autoAdvance();
         if (a === "grind") grind();
         if (a === "run") autoRun(el.dataset.d);
@@ -427,6 +607,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     if (!s.classList.contains("open")) { setRunning(false); s.classList.add("open"); }
   }
   function closeSheet(starting) {
+    clearInterval(infoTimer); infoTimer = null;          // stop live Game info however the sheet was closed
     $("#autoSheet").classList.remove("open");
     setRunning(true);
   }
