@@ -1,6 +1,6 @@
 // Pocket Shelf — shared storage + ROM helpers (everything stays on this device)
 const DB_NAME = "pocket-shelf";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -10,6 +10,7 @@ function openDB() {
       if (!db.objectStoreNames.contains("games")) db.createObjectStore("games", { keyPath: "id" });
       if (!db.objectStoreNames.contains("roms")) db.createObjectStore("roms", { keyPath: "id" });
       if (!db.objectStoreNames.contains("saves")) db.createObjectStore("saves", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("backups")) db.createObjectStore("backups", { keyPath: "key" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -38,6 +39,10 @@ const Store = {
   putRom: (r) => tx("roms", "readwrite", s => reqP(s.put(r))),
   getSave: (id) => tx("saves", "readonly", s => reqP(s.get(id))),
   putSave: (v) => tx("saves", "readwrite", s => reqP(s.put(v))),
+  // Restore points for Pokémon moves/trades: { key, label, created, saves: [{ id, data }] }
+  putBackup: (b) => tx("backups", "readwrite", s => reqP(s.put(b))),
+  allBackups: () => tx("backups", "readonly", s => reqP(s.getAll())),
+  deleteBackup: (key) => tx("backups", "readwrite", s => reqP(s.delete(key))),
   async deleteGame(id) {
     await tx("games", "readwrite", s => reqP(s.delete(id)));
     await tx("roms", "readwrite", s => reqP(s.delete(id)));

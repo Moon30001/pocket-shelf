@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#121216">
+<title>Pokémon Center · Pocket Shelf</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+<style>
+  .tabs { display: flex; gap: 6px; margin: 4px 0 14px; background: var(--panel); padding: 4px; border-radius: 12px; border: 1px solid var(--line); }
+  .tabs button { flex: 1; border: 0; background: transparent; padding: 9px 6px; border-radius: 9px; font-weight: 650; color: var(--muted); }
+  .tabs button.on { background: var(--panel-2); color: var(--text); }
+  .beta { font-size: 11px; font-weight: 800; letter-spacing: .06em; background: #3b2f0b; color: var(--accent); padding: 3px 7px; border-radius: 6px; }
+  .field { margin: 14px 0 8px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; font-weight: 650; }
+  .field select { width: 100%; }
+  .mons { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .mon { all: unset; cursor: pointer; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 10px; min-width: 0; }
+  .mon.sel { border-color: var(--accent); background: #2a2410; }
+  .mon.off { opacity: .45; cursor: default; }
+  .mon .n { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mon .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .where { font-size: 12px; color: var(--muted); margin: 14px 2px 6px; font-weight: 650; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin: 10px 0; }
+  .ok { color: #6be3a2; } .no { color: var(--danger); } .note { color: var(--muted); font-size: 13px; margin: 2px 0 0 18px; }
+  .big { width: 100%; padding: 14px; border-radius: 14px; font-size: 16px; margin-top: 12px; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .qr { width: min(260px, 72vw); aspect-ratio: 1; margin: 10px auto; background: #fff; border-radius: 14px; padding: 8px; display: grid; place-items: center; color: #333; font-size: 13px; text-align: center; }
+  .qr svg { width: 100%; height: 100%; }
+  .vs { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+  .vs .side { background: var(--panel-2); border-radius: 12px; padding: 10px; min-height: 74px; }
+  .vs .arrow { font-size: 22px; color: var(--accent); }
+  .row2 { display: flex; gap: 8px; } .row2 .btn { flex: 1; }
+  .empty-s { color: var(--muted); padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="btn ghost" href="index.html" style="text-decoration:none">‹ Library</a>
+  <div class="brand" style="font-size:17px">Pokémon Center</div>
+  <span class="beta">BETA</span>
+</header>
+<main>
+  <div class="tabs" id="tabs">
+    <button data-tab="move" class="on">Move</button>
+    <button data-tab="trade">Trade</button>
+    <button data-tab="restore">Restore</button>
+  </div>
+  <section id="tab-move"></section>
+  <section id="tab-trade" hidden></section>
+  <section id="tab-restore" hidden></section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="lib.js"></script>
+<script src="pkdata.js"></script>
+<script src="pksave-core.js"></script>
+<script src="pksave-gen12.js"></script>
+<script src="pksave-gen3.js"></script>
+<script src="pksave-gen45.js"></script>
+<script src="pkconvert.js"></script>
+<script src="peerjs.min.js"></script>
+<script src="qrcode.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const D = PkData;
+function toast(msg, ms = 3000) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), ms); }
+const spName = (n) => (D.species[n] || {}).name || "#" + n;
+const genderSym = (g) => g === 0 ? " ♂" : g === 1 ? " ♀" : "";
+const keyOf = (x) => x.where === "party" ? `p${x.slot}` : `b${x.box}-${x.slot}`;
+const whereText = (x) => x.where === "party" ? "Party" : `Box ${x.box + 1}`;
+
+// ---------- loading saves ----------
+let games = [];
+async function loadGames() {
+  games = (await Store.allGames()).sort((a, b) => a.title.localeCompare(b.title));
+}
+async function openGame(game) {
+  const rec = await Store.getSave(game.id);
+  if (!rec || !rec.data) return { error: "No save yet. Play it and save in-game first." };
+  try {
+    const save = PkSave.open(new Uint8Array(rec.data), { system: game.system, code: game.code });
+    return { game, rec, save };
+  } catch (e) { return { error: e.message }; }
+}
+function monCard(x, { selected, disabled, sub, gen } = {}) {
+  const m = x.mon;
+  const title = m.isNicknamed ? `${m.nickname}` : spName(m.species);
+  return `<button class="mon ${selected ? "sel" : ""} ${disabled ? "off" : ""}" data-key="${keyOf(x)}">
+    <div class="n">${esc(title)}${gen === 1 ? "" : genderSym(m.gender)}${m.shiny ? " ★" : ""}</div>
+    <div class="s">${m.isNicknamed ? esc(spName(m.species)) + " · " : ""}Lv ${m.level} · ${esc(sub || whereText(x))}</div></button>`;
+}
+function gameOptions(selectedId, filter = () => true, placeholder = "Choose a game") {
+  return `<option value="">${placeholder}</option>` + games.filter(filter).map(g => `<option value="${g.id}" ${g.id === selectedId ? "selected" : ""}>${esc(g.title)}</option>`).join("");
+}
+
+// ---------- applying changes safely ----------
+async function commit(label, changes) {   // changes: [{ game, rec, save }]
+  const backup = { key: Date.now() + "-" + Math.random().toString(36).slice(2, 6), label, created: Date.now(),
+    saves: changes.map(c => ({ id: c.game.id, title: c.game.title, data: new Uint8Array(c.rec.data) })) };
+  await Store.putBackup(backup);
+  for (const c of changes) {
+    const data = c.save.toBytes();
+    await Store.putSave({ id: c.game.id, data, updated: Date.now(), pendingImport: true });
+  }
+  const all = (await Store.allBackups()).sort((a, b) => b.created - a.created);
+  for (const old of all.slice(15)) await Store.deleteBackup(old.key);
+  return backup;
+}
+
+// ================= MOVE =================
+const mv = { fromId: "", toId: "", from: null, to: null, picked: new Set() };
+async function renderMove() {
+  const el = $("#tab-move");
+  if (!games.length) { el.innerHTML = `<div class="empty-s">Add some games to your shelf first.</div>`; return; }
+  let html = `<p class="hint">Move Pokémon between your own games. Save in-game first, then each game picks up the change the next time you open it. A restore point is made every time.</p>
+    <div class="field"><label>From</label><select id="mvFrom">${gameOptions(mv.fromId)}</select></div>`;
+  if (mv.from && mv.from.error) html += `<div class="empty-s">${esc(mv.from.error)}</div>`;
+  if (mv.from && mv.from.save) {
+    const list = mv.from.save.list();
+    const party = list.filter(x => x.where === "party"), boxes = list.filter(x => x.where === "box");
+    html += `<p class="hint">${esc(mv.from.save.trainer.name || "Trainer")} · save from ${fmtAgo(mv.from.rec.updated)}. Not seeing your latest catches? Save in-game, go back to the library, then come here.</p>`;
+    html += `<div class="where">PARTY</div><div class="mons">${party.map(x => monCard(x, { selected: mv.picked.has(keyOf(x)), gen: mv.from.save.gen })).join("")}</div>`;
+    html += boxes.length ? `<div class="where">PC BOXES</div><div class="mons">${boxes.map(x => monCard(x, { selected: mv.picked.has(keyOf(x)), gen: mv.from.save.gen })).join("")}</div>` : `<div class="where">PC is empty</div>`;
+    html += `<div class="field"><label>To</label><select id="mvTo">${gameOptions(mv.toId, g => g.id !== mv.fromId)}</select></div>`;
+    if (mv.to && mv.to.error) html += `<div class="empty-s">${esc(mv.to.error)}</div>`;
+    if (mv.to && mv.to.save && mv.picked.size) {
+      const results = [...mv.picked].map(k => {
+        const x = list.find(y => keyOf(y) === k);
+        const r = PkSave.convert(x.mon, mv.from.save.gen, mv.to.save.gen, { targetVersion: mv.to.save.version });
+        return { x, r };
+      });
+      const okCount = results.filter(r => r.r.ok).length;
+      html += `<div class="card">` + results.map(({ x, r }) => `<div><b class="${r.ok ? "ok" : "no"}">${r.ok ? "✓" : "✗"}</b> ${esc(x.mon.isNicknamed ? x.mon.nickname : spName(x.mon.species))} (Lv ${x.mon.level})${r.ok ? "" : ` · ${esc(r.reason)}`}</div>` +
+        (r.ok ? r.notes.map(n => `<div class="note">${esc(n)}</div>`).join("") : "")).join("") + `</div>`;
+      const partyLeft = party.length - results.filter(r => r.r.ok && r.x.where === "party").length;
+      if (partyLeft < 1) html += `<div class="empty-s">Keep at least one Pokémon in ${esc(mv.from.game.title)}'s party.</div>`;
+      else html += `<button class="btn primary big" id="mvGo" ${okCount ? "" : "disabled style='opacity:.4'"}>Move ${okCount} Pokémon to ${esc(mv.to.game.title)}</button>`;
+    } else if (mv.from.save && !mv.picked.size) html += `<p class="hint">Tap the Pokémon you want to move.</p>`;
+  }
+  el.innerHTML = html;
+  $("#mvFrom").onchange = async (e) => { mv.fromId = e.target.value; mv.picked.clear(); mv.from = mv.fromId ? await openGame(games.find(g => g.id === mv.fromId)) : null; if (mv.toId === mv.fromId) { mv.toId = ""; mv.to = null; } renderMove(); };
+  if ($("#mvTo")) $("#mvTo").onchange = async (e) => { mv.toId = e.target.value; mv.to = mv.toId ? await openGame(games.find(g => g.id === mv.toId)) : null; renderMove(); };
+  el.querySelectorAll(".mon").forEach(b => b.onclick = () => { const k = b.dataset.key; mv.picked.has(k) ? mv.picked.delete(k) : mv.picked.add(k); renderMove(); });
+  if ($("#mvGo")) $("#mvGo").onclick = doMove;
+}
+async function doMove() {
+  try {
+    const from = await openGame(mv.from.game), to = await openGame(mv.to.game);   // fresh copies
+    const list = from.save.list();
+    const picked = [...mv.picked].map(k => list.find(y => keyOf(y) === k));
+    const moved = [];
+    for (const x of picked) {
+      const r = PkSave.convert(x.mon, from.save.gen, to.save.gen, { targetVersion: to.save.version });
+      if (!r.ok) continue;
+      to.save.insert(r.mon);
+      moved.push(x);
+    }
+    // remove from the source: boxes first, then party from the highest slot so indexes stay valid
+    moved.filter(x => x.where === "box").forEach(x => from.save.remove(x));
+    moved.filter(x => x.where === "party").sort((a, b) => b.slot - a.slot).forEach(x => from.save.remove(x));
+    await commit(`Moved ${moved.length} Pokémon: ${from.game.title} → ${to.game.title}`, [from, to]);
+    toast(`Moved ${moved.length} Pokémon to ${to.game.title}. Open the game to see them in the PC.`, 4500);
+    mv.picked.clear(); mv.from = await openGame(from.game); mv.to = await openGame(to.game); renderMove();
+  } catch (e) { toast("Couldn't move: " + e.message, 6000); }
+}
+
+// ================= RESTORE =================
+async function renderRestore() {
+  const list = (await Store.allBackups()).sort((a, b) => b.created - a.created);
+  $("#tab-restore").innerHTML = `<p class="hint">Every move and trade saves the games' previous state here. Restoring puts those games back exactly as they were.</p>` +
+    (list.length ? list.map(b => `<div class="card"><div><b>${esc(b.label)}</b></div><div class="hint">${new Date(b.created).toLocaleString()} · ${b.saves.map(s => esc(s.title)).join(", ")}</div>
+      <button class="btn ghost" style="margin-top:10px" data-restore="${b.key}">Restore these games</button></div>`).join("") : `<div class="empty-s">No restore points yet.</div>`);
+  $("#tab-restore").querySelectorAll("[data-restore]").forEach(btn => btn.onclick = async () => {
+    if (btn.dataset.sure !== "1") { btn.dataset.sure = "1"; btn.textContent = "Tap again to restore"; return; }
+    const b = list.find(x => x.key === btn.dataset.restore);
+    for (const s of b.saves) await Store.putSave({ id: s.id, data: new Uint8Array(s.data), updated: Date.now(), pendingImport: true });
+    await Store.deleteBackup(b.key);
+    toast("Restored. Open the games to load their previous saves.", 4500);
+    renderRestore();
+  });
+}
+
+// ================= TRADE =================
+const tr = { gameId: "", mine: null, peer: null, conn: null, partner: null, consentMe: false, consentThem: false,
+  myOffer: null, theirOffer: null, theirCheck: null, readyMe: false, readyThem: false, done: null, status: "" };
+const hostFromHash = () => { const m = location.hash.match(/trade=([^&]+)/); return m ? decodeURIComponent(m[1]) : null; };
+const serialize = (mon) => JSON.parse(JSON.stringify(mon, (k, v) => v instanceof Uint8Array ? { __u8: Array.from(v) } : v));
+const deserialize = (o) => JSON.parse(JSON.stringify(o), (k, v) => v && v.__u8 ? new Uint8Array(v.__u8) : v);
+function send(msg) { if (tr.conn && tr.conn.open) tr.conn.send(msg); }
+
+function resetOffers() { tr.myOffer = null; tr.theirOffer = null; tr.theirCheck = null; tr.readyMe = false; tr.readyThem = false; }
+
+async function renderTrade() {
+  const el = $("#tab-trade");
+  const joining = hostFromHash();
+  let html = "";
+  if (tr.done) {
+    html = `<div class="card"><h3 style="margin:0 0 6px">Trade complete!</h3><div>${esc(tr.done.text)}</div>${tr.done.notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
+      <p class="hint">Open ${esc(tr.mine.game.title)} to find your new Pokémon in the PC. You can undo this in the Restore tab.</p></div>
+      <button class="btn primary big" id="trAgain">Trade again</button>`;
+    el.innerHTML = html;
+    $("#trAgain").onclick = async () => { tr.done = null; resetOffers(); tr.mine = await openGame(tr.mine.game); renderTrade(); };
+    return;
+  }
+  html += `<p class="hint">Trade with someone else using Pocket Shelf, even if you're playing different games. Both of you need internet to connect.</p>
+    <div class="field"><label>Your game</label><select id="trGame" ${tr.conn ? "disabled" : ""}>${gameOptions(tr.gameId)}</select></div>`;
+  if (tr.mine && tr.mine.error) html += `<div class="empty-s">${esc(tr.mine.error)}</div>`;
+  const ready = tr.mine && tr.mine.save;
+  if (ready && !tr.conn) {
+    if (joining) html += `<button class="btn primary big" id="trJoin">Connect to your friend</button>`;
+    else html += `<button class="btn primary big" id="trHost">Start a trade</button><div id="trQR"></div>`;
+  }
+  if (tr.status) html += `<p class="hint" style="text-align:center">${esc(tr.status)}</p>`;
+  if (tr.conn && tr.partner && !tr.consentMe) {
+    html += `<div class="card"><b>${esc(tr.partner.trainer)}</b> wants to trade from <b>${esc(tr.partner.title)}</b>.<div class="row2" style="margin-top:12px">
+      <button class="btn ghost" id="trNo">No</button><button class="btn primary" id="trYes">Yes, trade</button></div></div>`;
+  }
+  if (tr.consentMe && !tr.consentThem) html += `<p class="hint" style="text-align:center">Waiting for ${esc(tr.partner?.trainer || "your friend")} to say yes…</p>`;
+  if (tr.consentMe && tr.consentThem) {
+    const list = tr.mine.save.list();
+    const partyCount = list.filter(x => x.where === "party").length;
+    const mine = tr.myOffer ? list.find(x => keyOf(x) === tr.myOffer.key) : null;
+    const incoming = tr.theirOffer ? PkSave.convert(tr.theirOffer.mon, tr.partner.gen, tr.mine.save.gen, { trade: true, targetVersion: tr.mine.save.version, partnerSpecies: mine?.mon.species }) : null;
+    html += `<div class="card"><div class="vs">
+      <div class="side">${mine ? `<b>${esc(mine.mon.isNicknamed ? mine.mon.nickname : spName(mine.mon.species))}</b><div class="hint">Lv ${mine.mon.level} · you send</div>` : `<span class="hint">Pick a Pokémon below</span>`}
+        ${tr.theirCheck && !tr.theirCheck.ok ? `<div class="no" style="font-size:12px;margin-top:4px">${esc(tr.theirCheck.reason)}</div>` : ""}</div>
+      <div class="arrow">⇄</div>
+      <div class="side">${tr.theirOffer ? `<b>${esc(tr.theirOffer.mon.isNicknamed ? tr.theirOffer.mon.nickname : spName(tr.theirOffer.mon.species))}</b><div class="hint">Lv ${tr.theirOffer.mon.level} · from ${esc(tr.partner.trainer)}</div>
+        ${incoming && !incoming.ok ? `<div class="no" style="font-size:12px;margin-top:4px">${esc(incoming.reason)}</div>` : ""}` : `<span class="hint">Waiting for their pick…</span>`}</div>
+    </div>${incoming && incoming.ok ? incoming.notes.map(n => `<div class="note">${esc(n)}</div>`).join("") : ""}`;
+    const canTrade = mine && tr.theirOffer && incoming && incoming.ok && tr.theirCheck && tr.theirCheck.ok && !(mine.where === "party" && partyCount <= 1);
+    if (mine && mine.where === "party" && partyCount <= 1) html += `<div class="note no">You can't trade your last party Pokémon.</div>`;
+    html += tr.readyMe ? `<p class="hint" style="text-align:center">${tr.readyThem ? "Trading…" : "Waiting for them to confirm…"}</p>`
+      : `<button class="btn primary big" id="trGo" ${canTrade ? "" : "disabled style='opacity:.4'"}>Trade!</button>`;
+    html += `</div><div class="where">YOUR POKÉMON</div><div class="mons">${list.map(x => monCard(x, { selected: tr.myOffer && tr.myOffer.key === keyOf(x), gen: tr.mine.save.gen })).join("")}</div>`;
+  }
+  if (tr.conn) html += `<button class="btn ghost big" id="trLeave">Leave trade</button>`;
+  el.innerHTML = html;
+
+  $("#trGame") && ($("#trGame").onchange = async (e) => { tr.gameId = e.target.value; tr.mine = tr.gameId ? await openGame(games.find(g => g.id === tr.gameId)) : null; renderTrade(); });
+  $("#trHost") && ($("#trHost").onclick = startHost);
+  $("#trJoin") && ($("#trJoin").onclick = () => join(joining));
+  $("#trYes") && ($("#trYes").onclick = () => { tr.consentMe = true; send({ t: "consent", yes: true }); renderTrade(); });
+  $("#trNo") && ($("#trNo").onclick = () => { send({ t: "consent", yes: false }); leave("You declined the trade."); });
+  $("#trLeave") && ($("#trLeave").onclick = () => leave("Trade cancelled."));
+  $("#trGo") && ($("#trGo").onclick = () => setReady());
+  if (tr.consentMe && tr.consentThem && !tr.readyMe) el.querySelectorAll(".mon").forEach(b => b.onclick = () => offer(b.dataset.key));
+}
+
+function info() { return { t: "hello", v: 1, trainer: (tr.mine.save.trainer.name || "").trim() || "Trainer", title: tr.mine.game.title, gen: tr.mine.save.gen }; }
+function wire(conn) {
+  tr.conn = conn;
+  conn.on("open", () => { send(info()); if (!tr.partner) tr.status = "Connected, waiting for your friend…"; renderTrade(); });
+  conn.on("data", onMsg);
+  conn.on("close", () => { if (!tr.done) leave("Your friend left the trade."); });
+}
+async function startHost() {
+  if (!navigator.onLine) return toast("Trading needs internet on both phones.");
+  const id = "pkshelf-trade-" + Math.random().toString(36).slice(2, 9);
+  tr.peer = new Peer(id);
+  tr.status = "Getting a trade code…"; renderTrade();
+  tr.peer.on("open", () => {
+    const url = new URL("pokecenter.html#trade=" + encodeURIComponent(id), location.href).href;
+    const q = qrcode(0, "M"); q.addData(url); q.make();
+    tr.status = "";
+    renderTrade();
+    $("#trQR").innerHTML = `<div class="qr">${q.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div><p class="hint" style="text-align:center">Your friend scans this with their phone camera.<br><span style="font-size:11px;word-break:break-all">${esc(url)}</span></p>`;
+  });
+  tr.peer.on("connection", (c) => { if (tr.conn) return c.close(); wire(c); });
+  tr.peer.on("error", (e) => { tr.status = "Connection problem: " + (e.type || e.message); renderTrade(); });
+}
+function join(hostId) {
+  if (!navigator.onLine) return toast("Trading needs internet on both phones.");
+  tr.peer = new Peer();
+  tr.status = "Connecting…"; renderTrade();
+  tr.peer.on("open", () => wire(tr.peer.connect(hostId, { reliable: true, serialization: "json" })));
+  tr.peer.on("error", (e) => { tr.status = e.type === "peer-unavailable" ? "Couldn't find that trade. Ask your friend for a new QR code." : "Connection problem: " + (e.type || e.message); renderTrade(); });
+}
+function leave(msg) {
+  try { tr.conn && tr.conn.close(); tr.peer && tr.peer.destroy(); } catch (e) {}
+  Object.assign(tr, { peer: null, conn: null, partner: null, consentMe: false, consentThem: false, status: msg || "" });
+  resetOffers();
+  if (hostFromHash()) history.replaceState(null, "", "pokecenter.html#tab=trade");
+  renderTrade();
+}
+function offer(key) {
+  const x = tr.mine.save.list().find(y => keyOf(y) === key);
+  tr.myOffer = { key, mon: x.mon }; tr.readyMe = false; tr.readyThem = false; tr.theirCheck = null;
+  send({ t: "offer", key, mon: serialize(x.mon) });
+  renderTrade();
+}
+// dry-run the swap on a copy so we only say "ready" if our side will definitely succeed
+async function dryRun() {
+  const copy = await openGame(tr.mine.game);
+  const target = copy.save.list().find(y => keyOf(y) === tr.myOffer.key);
+  const r = PkSave.convert(tr.theirOffer.mon, tr.partner.gen, copy.save.gen, { trade: true, targetVersion: copy.save.version, partnerSpecies: target.mon.species });
+  if (!r.ok) throw new Error(r.reason);
+  copy.save.remove(target);
+  copy.save.insert(r.mon);
+  copy.save.toBytes();
+  return { copy, r };
+}
+async function setReady() {
+  try { await dryRun(); } catch (e) { return toast("This trade can't be done: " + e.message, 5000); }
+  tr.readyMe = true; send({ t: "ready", mine: tr.myOffer.key, theirs: tr.theirOffer.key }); renderTrade(); maybeFinish();
+}
+let finishing = false;
+async function maybeFinish() {
+  if (!(tr.readyMe && tr.readyThem) || finishing) return;
+  finishing = true;
+  try {
+    const { copy, r } = await dryRun();
+    const backup = await commit(`Traded with ${tr.partner.trainer} (${tr.partner.title})`, [copy]);
+    const sent = tr.myOffer.mon;
+    tr.done = { text: `You sent ${sent.isNicknamed ? sent.nickname : spName(sent.species)} and received ${r.mon.isNicknamed ? r.mon.nickname : spName(r.mon.species)}.`, notes: r.notes, backup: backup.key };
+    send({ t: "done" });
+  } catch (e) { toast("Trade failed on this phone: " + e.message + ". Nothing was changed here.", 7000); send({ t: "failed", reason: e.message }); resetOffers(); }
+  finishing = false;
+  renderTrade();
+}
+function onMsg(raw) {
+  const msg = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (msg.t === "hello") { tr.partner = msg; tr.status = ""; }
+  if (msg.t === "consent") { if (!msg.yes) return leave(`${tr.partner?.trainer || "Your friend"} said no.`); tr.consentThem = true; }
+  if (msg.t === "offer") {
+    tr.theirOffer = { key: msg.key, mon: deserialize(msg.mon) }; tr.readyMe = false; tr.readyThem = false;
+    const mine = tr.myOffer ? tr.mine.save.list().find(y => keyOf(y) === tr.myOffer.key) : null;
+    const r = PkSave.convert(tr.theirOffer.mon, tr.partner.gen, tr.mine.save.gen, { trade: true, targetVersion: tr.mine.save.version, partnerSpecies: mine?.mon.species });
+    send({ t: "check", ok: r.ok, reason: r.ok ? "" : `${tr.mine.save.trainer.name}'s game can't take it: ${r.reason}` });
+  }
+  if (msg.t === "check") tr.theirCheck = msg;
+  if (msg.t === "ready") {
+    if (tr.myOffer && tr.theirOffer && msg.mine === tr.theirOffer.key && msg.theirs === tr.myOffer.key) { tr.readyThem = true; maybeFinish(); }
+  }
+  if (msg.t === "failed") { toast(`The trade failed on ${tr.partner.trainer}'s phone (${msg.reason}). If yours finished, undo it in Restore.`, 8000); }
+  renderTrade();
+}
+
+// ---------- tabs ----------
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  ["move", "trade", "restore"].forEach(t => $("#tab-" + t).hidden = t !== name);
+  if (name === "move") renderMove(); if (name === "trade") renderTrade(); if (name === "restore") renderRestore();
+}
+$("#tabs").onclick = (e) => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
+addEventListener("hashchange", () => { if (hostFromHash() || /tab=trade/.test(location.hash)) showTab("trade"); });
+
+(async () => {
+  registerSW();
+  await loadGames();
+  showTab(hostFromHash() || /tab=trade/.test(location.hash) ? "trade" : "move");
+})();
+</script>
+</body>
+</html>
