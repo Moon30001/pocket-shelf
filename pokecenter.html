@@ -33,6 +33,10 @@
   .vs .side { background: var(--panel-2); border-radius: 12px; padding: 10px; min-height: 74px; }
   .vs .arrow { font-size: 22px; color: var(--accent); }
   .row2 { display: flex; gap: 8px; } .row2 .btn { flex: 1; }
+  .scan-overlay { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 20px; }
+  .scan-overlay video { width: min(92vw, 520px); aspect-ratio: 1; object-fit: cover; border-radius: 16px; }
+  .scan-overlay .scan-frame { position: absolute; width: min(60vw, 340px); aspect-ratio: 1; border: 3px solid var(--accent); border-radius: 18px; pointer-events: none; }
+  .scan-title { color: #fff; font-weight: 700; text-align: center; }
   .empty-s { color: var(--muted); padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
 </style>
 </head>
@@ -63,6 +67,8 @@
 <script src="pkconvert.js"></script>
 <script src="peerjs.min.js"></script>
 <script src="qrcode.js"></script>
+<script src="jsqr.js"></script>
+<script src="offline.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -185,7 +191,7 @@ async function renderRestore() {
 }
 
 // ================= TRADE =================
-const tr = { gameId: "", mine: null, peer: null, conn: null, partner: null, consentMe: false, consentThem: false,
+const tr = { mode: navigator.onLine ? "online" : "offline", offline: null, offStep: null, offCode: null, gameId: "", mine: null, peer: null, conn: null, partner: null, consentMe: false, consentThem: false,
   myOffer: null, theirOffer: null, theirCheck: null, readyMe: false, readyThem: false, done: null, status: "" };
 const hostFromHash = () => { const m = location.hash.match(/trade=([^&]+)/); return m ? decodeURIComponent(m[1]) : null; };
 const serialize = (mon) => JSON.parse(JSON.stringify(mon, (k, v) => v instanceof Uint8Array ? { __u8: Array.from(v) } : v));
@@ -206,13 +212,25 @@ async function renderTrade() {
     $("#trAgain").onclick = async () => { tr.done = null; resetOffers(); tr.mine = await openGame(tr.mine.game); renderTrade(); };
     return;
   }
-  html += `<p class="hint">Trade with someone else using Pocket Shelf, even if you're playing different games. Both of you need internet to connect.</p>
+  html += `<p class="hint">Trade with someone else using Pocket Shelf, even if you're playing different games.</p>
     <div class="field"><label>Your game</label><select id="trGame" ${tr.conn ? "disabled" : ""}>${gameOptions(tr.gameId)}</select></div>`;
+  if (!tr.conn && !joining) html += `<div class="tabs" id="trMode" style="margin-top:6px">
+      <button data-mode="online" class="${tr.mode === "online" ? "on" : ""}">Online</button>
+      <button data-mode="offline" class="${tr.mode === "offline" ? "on" : ""}">Offline</button></div>
+    <p class="hint">${tr.mode === "offline" ? "No internet needed. Both phones join the same Wi-Fi, or one turns on its hotspot and the other connects to it. You'll scan each other's codes." : "Both phones need internet. Your friend scans one QR code with their phone camera."}</p>`;
   if (tr.mine && tr.mine.error) html += `<div class="empty-s">${esc(tr.mine.error)}</div>`;
   const ready = tr.mine && tr.mine.save;
   if (ready && !tr.conn) {
     if (joining) html += `<button class="btn primary big" id="trJoin">Connect to your friend</button>`;
+    else if (tr.mode === "offline") html += `<div class="row2"><button class="btn primary big" id="trOffHost">Start trade</button><button class="btn ghost big" id="trOffJoin">Join a trade</button></div>`;
     else html += `<button class="btn primary big" id="trHost">Start a trade</button><div id="trQR"></div>`;
+  }
+  if (tr.offStep && !tr.partner) {
+    const step = tr.offStep === "hostShow"
+      ? `<b>1.</b> On your friend's phone: <b>⇄ Pokémon → Trade → Offline → Join a trade</b>, then scan this code.<br><b>2.</b> Then tap the button below and scan the code that appears on their phone.`
+      : `Now let your friend scan this code with their phone. You'll connect automatically.`;
+    html += `<div class="card"><div class="qr">${PocketOffline.qrSvg(tr.offCode)}</div><p class="hint" style="text-align:center">${step}</p>
+      ${tr.offStep === "hostShow" ? `<button class="btn primary big" id="trOffScan">Scan your friend's code</button>` : ""}</div>`;
   }
   if (tr.status) html += `<p class="hint" style="text-align:center">${esc(tr.status)}</p>`;
   if (tr.conn && tr.partner && !tr.consentMe) {
@@ -243,6 +261,10 @@ async function renderTrade() {
 
   $("#trGame") && ($("#trGame").onchange = async (e) => { tr.gameId = e.target.value; tr.mine = tr.gameId ? await openGame(games.find(g => g.id === tr.gameId)) : null; renderTrade(); });
   $("#trHost") && ($("#trHost").onclick = startHost);
+  $("#trMode") && $("#trMode").querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { tr.mode = b.dataset.mode; renderTrade(); });
+  $("#trOffHost") && ($("#trOffHost").onclick = offlineHost);
+  $("#trOffJoin") && ($("#trOffJoin").onclick = offlineJoin);
+  $("#trOffScan") && ($("#trOffScan").onclick = offlineAccept);
   $("#trJoin") && ($("#trJoin").onclick = () => join(joining));
   $("#trYes") && ($("#trYes").onclick = () => { tr.consentMe = true; send({ t: "consent", yes: true }); renderTrade(); });
   $("#trNo") && ($("#trNo").onclick = () => { send({ t: "consent", yes: false }); leave("You declined the trade."); });
@@ -254,7 +276,7 @@ async function renderTrade() {
 function info() { return { t: "hello", v: 1, trainer: (tr.mine.save.trainer.name || "").trim() || "Trainer", title: tr.mine.game.title, gen: tr.mine.save.gen }; }
 function wire(conn) {
   tr.conn = conn;
-  conn.on("open", () => { send(info()); if (!tr.partner) tr.status = "Connected, waiting for your friend…"; renderTrade(); });
+  conn.on("open", () => { tr.offStep = null; send(info()); if (!tr.partner) tr.status = "Connected, waiting for your friend…"; renderTrade(); });
   conn.on("data", onMsg);
   conn.on("close", () => { if (!tr.done) leave("Your friend left the trade."); });
 }
@@ -273,6 +295,35 @@ async function startHost() {
   tr.peer.on("connection", (c) => { if (tr.conn) return c.close(); wire(c); });
   tr.peer.on("error", (e) => { tr.status = "Connection problem: " + (e.type || e.message); renderTrade(); });
 }
+// ---- offline (same Wi-Fi / hotspot, no internet) ----
+async function offlineHost() {
+  tr.status = "Preparing a trade code…"; renderTrade();
+  try {
+    tr.offline = await PocketOffline.host();
+    wire(tr.offline.conn);
+    tr.offCode = tr.offline.code; tr.offStep = "hostShow"; tr.status = "";
+  } catch (e) { tr.status = "Couldn't start an offline trade: " + e.message; }
+  renderTrade();
+}
+async function offlineAccept() {
+  try {
+    const code = await PocketOffline.scan("Scan the code on your friend's phone");
+    await tr.offline.accept(code);
+    tr.status = "Connecting… (both phones must be on the same Wi-Fi or hotspot)";
+    setTimeout(() => { if (tr.offStep && !tr.partner) { tr.status = "Still connecting. Check both phones are on the same Wi-Fi or hotspot, then try again."; renderTrade(); } }, 12000);
+  } catch (e) { if (e.message !== "cancelled") toast(e.message, 5000); }
+  renderTrade();
+}
+async function offlineJoin() {
+  try {
+    const code = await PocketOffline.scan("Scan the code on your friend's phone");
+    tr.status = "Making your reply code…"; renderTrade();
+    const g = await PocketOffline.guest(code);
+    tr.offline = g; wire(g.conn);
+    tr.offCode = g.code; tr.offStep = "guestShow"; tr.status = "";
+  } catch (e) { if (e.message !== "cancelled") toast(e.message, 5000); tr.status = ""; }
+  renderTrade();
+}
 function join(hostId) {
   if (!navigator.onLine) return toast("Trading needs internet on both phones.");
   tr.peer = new Peer();
@@ -282,7 +333,7 @@ function join(hostId) {
 }
 function leave(msg) {
   try { tr.conn && tr.conn.close(); tr.peer && tr.peer.destroy(); } catch (e) {}
-  Object.assign(tr, { peer: null, conn: null, partner: null, consentMe: false, consentThem: false, status: msg || "" });
+  Object.assign(tr, { peer: null, conn: null, partner: null, consentMe: false, consentThem: false, status: msg || "", offline: null, offStep: null, offCode: null });
   resetOffers();
   if (hostFromHash()) history.replaceState(null, "", "pokecenter.html#tab=trade");
   renderTrade();
