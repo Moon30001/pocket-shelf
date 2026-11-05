@@ -431,9 +431,37 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     setRunning(true);
   }
 
+  // Keep the Auto button away from every game control:
+  // portrait → right side of the empty strip under the game picture (or top-right if there's no strip, e.g. DS)
+  function placeAutoBtn() {
+    const btn = $("#autoBtn"), emu = window.EJS_emulator;
+    if (!btn || !emu || !emu.canvas) return;
+    btn.style.cssText = "";
+    if (innerWidth > innerHeight) return;                 // landscape: CSS puts it in the left side bar
+    let aspect = 1.5;
+    try { aspect = emu.gameManager.getVideoDimensions("aspect") || aspect; } catch (e) {}
+    const c = emu.canvas.getBoundingClientRect();
+    const pictureBottom = c.top + Math.min(c.height, c.width / aspect);
+    let controlsTop = innerHeight;
+    if (emu.virtualGamepad && emu.virtualGamepad.style.display !== "none") {
+      emu.virtualGamepad.querySelectorAll(".ejs_virtualGamepad_button, .ejs_dpad_main").forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (r.width && r.height) controlsTop = Math.min(controlsTop, r.top);
+      });
+    }
+    btn.style.position = "fixed";
+    btn.style.right = "10px";
+    btn.style.left = "auto"; btn.style.bottom = "auto";
+    btn.style.top = (controlsTop - pictureBottom >= 48 ? pictureBottom + 10 : c.top + 8) + "px";
+    if (controlsTop - pictureBottom < 48) btn.style.right = "52px";   // sit beside the ☰ menu
+  }
+
   window.PocketAutoInit = function (ctx) {
     ctxRef = ctx;
     wireStopListeners();
+    placeAutoBtn();
+    setTimeout(placeAutoBtn, 600);
+    addEventListener("resize", () => setTimeout(placeAutoBtn, 200));
     $("#autoBtn").onclick = () => { if (run) return stopAuto(false); openSheet("menu"); };
     $("#autoSheet").addEventListener("click", (e) => { if (e.target.id === "autoSheet") closeSheet(false); });
   };
