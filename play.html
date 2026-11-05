@@ -14,8 +14,13 @@
   <button class="btn" id="backBtn" aria-label="Back to library">‹ Library</button>
   <div class="title" id="title">Loading…</div>
   <span class="saved" id="saved"></span>
+  <button class="btn" id="autoBtn">Auto</button>
+  <button class="btn" id="padBtn">📱 Phone pad</button>
   <button class="btn" id="switchBtn">Games ⇄</button>
 </div>
+<div class="auto-banner" id="autoBanner"></div>
+<div class="switcher" id="autoSheet"><div class="sheet"></div></div>
+<div class="switcher" id="padSheet"><div class="sheet"></div></div>
 <div id="stage"><div id="game"></div></div>
 
 <div class="switcher" id="switcher"><div class="sheet">
@@ -25,6 +30,10 @@
 </div></div>
 
 <script src="lib.js"></script>
+<script src="auto.js"></script>
+<script src="peerjs.min.js"></script>
+<script src="qrcode.js"></script>
+<script src="remote.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get("id");
@@ -67,6 +76,7 @@ async function tickPlaytime() {
 }
 
 async function leave(url) {
+  if (window.PocketAuto && PocketAuto.isRunning()) PocketAuto.stop();
   await flush();
   await tickPlaytime();
   location.href = url;
@@ -163,6 +173,8 @@ function fail(msg) {
       } catch (e) { console.warn("Save restore skipped:", e); }
       lastTick = Date.now();
       setInterval(() => { flush(); tickPlaytime(); }, 15000);
+      PocketAutoInit({ getGame: () => game, saveGame: (g) => Store.putGame(g) });
+      PocketRemoteInit({ getGame: () => game });
     }
   });
 

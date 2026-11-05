@@ -124,3 +124,39 @@ body.player .ejs_dpad_horizontal { height: 58px; border-radius: 8px; }
 body.player .ejs_dpad_vertical { width: 58px; border-radius: 8px; }
 body.player .ejs_dpad_horizontal:before, body.player .ejs_dpad_horizontal:after,
 body.player .ejs_dpad_vertical:before, body.player .ejs_dpad_vertical:after { border-width: 11px; }
+
+/* ---------- auto modes ---------- */
+body.player .pbar #autoBtn { color: #1a1500; background: rgba(255,203,61,.85); border-color: rgba(255,203,61,.9); }
+.auto-banner { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 8px); transform: translateX(-50%); z-index: 35;
+  display: none; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 8px 10px 8px 12px; border-radius: 12px;
+  background: rgba(15,15,20,.82); border: 1px solid rgba(255,255,255,.18); color: #f2f2f6; font-size: 13px; line-height: 1.3; backdrop-filter: blur(6px); }
+.auto-banner.show { display: flex; }
+.auto-banner small { color: #b9b9c6; }
+.auto-banner .ab-text { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.ab-btn { border: 0; border-radius: 999px; padding: 6px 12px; background: #ffcb3d; color: #1a1500; font-weight: 700; font-size: 12px; flex: none; }
+.ab-btn + .ab-btn { background: rgba(255,255,255,.14); color: #fff; }
+.auto-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: 0; background: transparent; border-radius: 12px; text-align: left; border-top: 1px solid var(--line); }
+.auto-item:disabled { opacity: .45; }
+.auto-item small { color: var(--muted); }
+.auto-item .ai-ic { width: 40px; height: 40px; border-radius: 10px; background: var(--panel-2); display: grid; place-items: center; font-weight: 800; flex: none; color: var(--accent); }
+.auto-item .dirs { display: grid; grid-template-columns: repeat(4, 38px); gap: 6px; }
+.auto-item .dirs button { height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); font-size: 18px; }
+.link-btn { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 2px 10px 10px 62px; text-decoration: underline; }
+#autoSheet .k { font-weight: 600; display: block; }
+#autoSheet .d { font-size: 12px; color: var(--muted); }
+
+/* ---------- phone-as-controller (shown on laptops/desktops only) ---------- */
+@media (pointer: coarse) { body.player #padBtn { display: none; } }
+body.player .pbar #padBtn.connected { background: rgba(71,209,140,.25); border-color: rgba(71,209,140,.7); color: #c8f5dd; }
+.pad-qr { display: grid; place-items: center; margin: 8px auto 0; width: min(260px, 70vw); aspect-ratio: 1; background: #fff; border-radius: 14px; padding: 8px; color: #333; text-align: center; font-size: 13px; }
+.pad-qr svg { width: 100%; height: 100%; }
+#padSheet .d { font-size: 12px; color: var(--muted); }
+
+/* ---------- TV mode: phone held sideways → nothing covers the game (clean for HDMI / cast mirroring) ---------- */
+@media (orientation: landscape) and (pointer: coarse) {
+  body.player .ejs_virtualGamepad_button.b_select { position: fixed !important; left: 10px !important; right: auto !important; top: auto !important; bottom: calc(52px + env(safe-area-inset-bottom)) !important; }
+  body.player .ejs_virtualGamepad_button.b_speed_fast { position: fixed !important; left: 82px !important; right: auto !important; top: auto !important; bottom: calc(52px + env(safe-area-inset-bottom)) !important; }
+  body.player .ejs_virtualGamepad_button.b_start { position: fixed !important; right: 10px !important; left: auto !important; top: auto !important; bottom: calc(52px + env(safe-area-inset-bottom)) !important; }
+  body.player .ejs_virtualGamepad_button.b_speed_slow { position: fixed !important; right: 82px !important; left: auto !important; top: auto !important; bottom: calc(52px + env(safe-area-inset-bottom)) !important; }
+  body.player .pbar #autoBtn { position: fixed; left: 10px; top: calc(env(safe-area-inset-top) + 10px); }
+}
