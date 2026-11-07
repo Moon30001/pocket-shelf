@@ -27,6 +27,7 @@
   <div id="continueWrap"></div>
   <div id="libWrap"></div>
   <p class="foot">Your ROMs and saves never leave this device. No account, no servers.<br>
+    <a href="#" id="tourAgain">Show the tutorial again</a><br>
     Emulation by <a href="LICENSE-EmulatorJS.txt">EmulatorJS</a> (mGBA, melonDS, DeSmuME cores, GPL).</p>
 </main>
 
@@ -39,6 +40,7 @@
 
 <script src="lib.js"></script>
 <script src="qrcode.js"></script>
+<script src="tour.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 let games = [];
@@ -172,13 +174,30 @@ function showInstallGuide() {
   const b = $("#installNow");
   if (b) b.onclick = async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; if (r.outcome === "accepted") closeSheet(); };
 }
-// Opened from a shared link (or first visit on an iPhone) and not installed yet: show how to install
+// ---------- first-time tutorial ----------
+const TOUR = [
+  { title: "Welcome to Pocket Shelf 👋", body: `<p>Play your Pokémon games on this phone, even with no internet. Each game keeps its own save, right here on the phone. No account needed.</p><p>This quick tour shows you the buttons. Tap <b>Next</b>, or <b>Skip</b> any time.</p>` },
+  { when: () => !isStandalone, title: "Install it first", body: isIOS
+      ? `<p>Add it to your home screen so it works offline and keeps your games:</p><p>Safari <b>•••</b> → <b>Share</b> → <b>Add to Home Screen</b> → <b>Add</b>.</p><p>Then open Pocket Shelf from the home screen and add your games there. Games added in Safari don't carry over.</p>`
+      : `<p>Add it to your home screen so it works offline: browser menu <b>⋮</b> → <b>Install app</b> (or <b>Add to Home screen</b>).</p>` },
+  { title: "You need your game files", body: `<p>Pocket Shelf plays game files (ROMs) that you supply: <b>.gba</b>, <b>.gb</b>, <b>.gbc</b>, <b>.nds</b> or a <b>.zip</b> of one.</p><p>Get them from cartridges you own using a cartridge reader (for example a GB Operator or GBxCart), then save the file to your phone's Files or Downloads.</p><p>For <b>Play together</b>, everyone needs FireRed, LeafGreen or Emerald.</p>` },
+  { target: "#addBtn", title: "Add your games", body: `<p>Tap <b>＋ Add ROMs</b> and pick the game files from your phone. You can pick several at once.</p>` },
+  { target: "#libWrap", title: "Your shelf", body: `<p>Your games show up here. Tap a game to play.</p><p>Tap <b>⋯</b> on a game to rename it, back up its save (<b>Export save</b>) or bring in a save from another device.</p>` },
+  { target: 'a[href="pokecenter.html"]', title: "Pokémon Center", body: `<p>Move Pokémon between your games, or trade with a friend's phone, online or with no internet.</p><p>Every change makes a restore point, so you can always undo.</p>` },
+  { target: "#shareBtn", title: "Invite friends", body: `<p>Tap <b>Share</b> to send this app to a friend's phone, by link or QR code. They add their own games.</p>` },
+  { title: "Play together", body: `<p>Inside a game, tap <b>Auto</b> → <b>Play together</b> to see up to 3 friends walking around your world. Wave at them or start a trade.</p><p>Both phones need internet for this. You'll get a short tour of the game screen the first time you play.</p>` },
+];
+function startTour(force) { if (force) PocketTour.reset("home"); PocketTour.maybe("home", TOUR); }
+// Opened from a shared link, or on an iPhone, and not installed yet: first show how to install.
+// (On iPhone the home-screen app has its own storage, so the full tour waits until it's opened from there.)
 (() => {
-  if (isStandalone) return;
   let seen = false; try { seen = localStorage.getItem("ps_install_guide_seen") === "1"; } catch (e) {}
   const fromLink = new URLSearchParams(location.search).has("install");
-  if (fromLink || (isIOS && !seen)) setTimeout(showInstallGuide, 600);
+  if (!isStandalone && (fromLink || (isIOS && !seen))) { setTimeout(showInstallGuide, 600); return; }
+  setTimeout(() => startTour(false), 700);
 })();
+
+$("#tourAgain").onclick = (e) => { e.preventDefault(); scrollTo(0, 0); startTour(true); };
 
 // ---------- per-game sheet ----------
 function closeSheet() { $("#sheetBg").classList.remove("open"); }

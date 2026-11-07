@@ -1,5 +1,5 @@
 // Pocket Shelf offline cache — every app + emulator file is stored on install
-const CACHE = "pocket-shelf-732d102ac7";
+const CACHE = "pocket-shelf-d9caf2bc19";
 const FILES = [
  "./",
  "GameManager.js",
@@ -44,6 +44,7 @@ const FILES = [
  "play.html",
  "pokecenter.html",
  "qrcode.js",
+ "tour.js",
  "remote.js",
  "shaders.js",
  "socket.io.min.js",

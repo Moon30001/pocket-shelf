@@ -173,3 +173,17 @@ body.player .pbar #padBtn.connected { background: rgba(71,209,140,.25); border-c
 /* iPhone install guide: arrow nudging toward Safari's bottom-right ••• button */
 .ios-arrow { position: fixed; right: 26px; bottom: 6px; font-size: 30px; color: #ffd84a; animation: nudge 1s ease-in-out infinite; pointer-events: none; z-index: 30; }
 @keyframes nudge { 0%,100% { transform: translateY(0); } 50% { transform: translateY(8px); } }
+
+/* guided tour */
+.tour-block { position: fixed; inset: 0; z-index: 60; }
+.tour-shade { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 61; }
+.tour-ring { position: fixed; z-index: 61; border-radius: 14px; border: 3px solid #ffd84a; box-shadow: 0 0 0 9999px rgba(0,0,0,.72); pointer-events: none; animation: tourPulse 1.4s ease-in-out infinite; transition: left .2s, top .2s, width .2s, height .2s; }
+@keyframes tourPulse { 0%,100% { border-color: #ffd84a; } 50% { border-color: #fff3b0; } }
+.tour-card { position: fixed; left: 50%; transform: translateX(-50%); z-index: 62; width: min(92vw, 400px); background: var(--panel, #1c1c22); color: var(--text, #fff); border: 1px solid var(--line, #333); border-radius: 18px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.tour-card h3 { margin: 2px 0 6px; font-size: 18px; }
+.tour-count { font-size: 12px; color: var(--muted, #999); }
+.tour-body { font-size: 14.5px; line-height: 1.5; }
+.tour-body p { margin: 0 0 8px; }
+.tour-body ul { margin: 0 0 8px; padding-left: 20px; }
+.tour-btns { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.tour-btns .btn { padding: 9px 14px; font-size: 14px; }
