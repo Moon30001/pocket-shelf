@@ -8,12 +8,17 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pocket Shelf">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <header class="top">
   <div class="brand"><img src="icon-192.png" alt="">Pocket Shelf</div>
   <div class="spacer"></div>
+  <button class="btn" id="shareBtn" style="padding:8px 12px;font-size:14px" aria-label="Share Pocket Shelf">↗ Share</button>
   <a class="btn" href="pokecenter.html" style="text-decoration:none;padding:8px 12px;font-size:14px">⇄ Pokémon</a>
   <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Preparing offline mode…</span></div>
 </header>
@@ -33,6 +38,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="lib.js"></script>
+<script src="qrcode.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 let games = [];
@@ -107,6 +113,72 @@ addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; document
 addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
 addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; document.body.classList.remove("dragging"); addFiles([...e.dataTransfer.files]); });
+
+// ---------- share the app + install it on another phone ----------
+const APP_URL = new URL("./?install=1", location.href).href;
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+let installEvt = null;                                   // Android/Chrome: lets us show the real "Install" prompt on a tap
+addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; const b = $("#installNow"); if (b) b.hidden = false; });
+
+function qrSvgFor(text) { const q = qrcode(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 5, margin: 2, scalable: true }); }
+
+$("#shareBtn").onclick = () => {
+  $("#sheet").innerHTML = `
+    <h3>Put Pocket Shelf on another phone</h3>
+    <div class="sub">Send this link, or let the other phone scan the code with its camera. It opens the app and shows how to add it to the home screen. Games and saves aren't shared; each phone adds its own ROMs.</div>
+    <div class="qr" style="background:#fff;border-radius:14px;padding:10px;max-width:240px;margin:0 auto 12px">${qrSvgFor(APP_URL)}</div>
+    <div class="actions">
+      <button class="btn primary full" id="sendLink">Send link…</button>
+      <button class="btn ghost full" id="copyLink">Copy link</button>
+    </div>
+    <p class="hint" style="font-size:12px;color:var(--muted);word-break:break-all;margin-top:10px">${esc(APP_URL)}</p>`;
+  $("#sheetBg").classList.add("open");
+  $("#sendLink").onclick = async () => {
+    const data = { title: "Pocket Shelf", text: "Pocket Shelf, my Pokémon game player. Open this link, then add it to your home screen:", url: APP_URL };
+    if (navigator.share) { try { await navigator.share(data); } catch (e) {} }
+    else { await copyText(APP_URL); toast("Link copied. Paste it into a message."); }
+  };
+  $("#copyLink").onclick = async () => { await copyText(APP_URL); toast("Link copied"); };
+};
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); }
+  catch (e) { const i = document.createElement("textarea"); i.value = t; document.body.appendChild(i); i.select(); document.execCommand("copy"); i.remove(); }
+}
+
+function showInstallGuide() {
+  const ios = isIOS;
+  const notSafari = ios && /CriOS|FxiOS|EdgiOS|GSA\//.test(navigator.userAgent);
+  $("#sheet").innerHTML = `
+    <h3>Add Pocket Shelf to your home screen</h3>
+    <div class="sub">Then it opens full screen like an app and works without internet.</div>
+    ${ios ? `
+      ${notSafari ? `<p style="margin:0 0 10px">For the smoothest setup, open this link in <b>Safari</b>.</p>` : ""}
+      <ol class="steps" style="margin:0 0 12px;padding-left:22px;line-height:1.6">
+        <li>Tap <b>•••</b> at the bottom right (or the <b>Share</b> button <span aria-hidden="true">⬆︎</span>).</li>
+        <li>Tap <b>Share</b> if you see it, then scroll down and tap <b>Add to Home Screen</b>.</li>
+        <li>Leave <b>Open as Web App</b> on and tap <b>Add</b>.</li>
+        <li>Open <b>Pocket Shelf</b> from the home screen and add your ROMs there.</li>
+      </ol>` : `
+      <ol class="steps" style="margin:0 0 12px;padding-left:22px;line-height:1.6">
+        <li>Tap <b>Install app</b> below. If there's no button, open the browser menu <b>⋮</b> and tap <b>Install app</b> or <b>Add to Home screen</b>.</li>
+        <li>Open <b>Pocket Shelf</b> from the home screen and add your ROMs there.</li>
+      </ol>
+      <div class="actions"><button class="btn primary full" id="installNow" ${installEvt ? "" : "hidden"}>Install app</button></div>`}
+    <div class="actions"><button class="btn ghost full" id="guideClose">Not now</button></div>
+    ${ios ? `<div class="ios-arrow" aria-hidden="true">⬇︎</div>` : ""}`;
+  $("#sheetBg").classList.add("open");
+  $("#guideClose").onclick = () => { try { localStorage.setItem("ps_install_guide_seen", "1"); } catch (e) {} closeSheet(); };
+  const b = $("#installNow");
+  if (b) b.onclick = async () => { if (!installEvt) return; installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; if (r.outcome === "accepted") closeSheet(); };
+}
+// Opened from a shared link (or first visit on an iPhone) and not installed yet: show how to install
+(() => {
+  if (isStandalone) return;
+  let seen = false; try { seen = localStorage.getItem("ps_install_guide_seen") === "1"; } catch (e) {}
+  const fromLink = new URLSearchParams(location.search).has("install");
+  if (fromLink || (isIOS && !seen)) setTimeout(showInstallGuide, 600);
+})();
 
 // ---------- per-game sheet ----------
 function closeSheet() { $("#sheetBg").classList.remove("open"); }

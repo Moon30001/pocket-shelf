@@ -160,3 +160,16 @@ body.player .pbar #padBtn.connected { background: rgba(71,209,140,.25); border-c
   body.player .ejs_virtualGamepad_button.b_speed_slow { position: fixed !important; right: 82px !important; left: auto !important; top: auto !important; bottom: calc(52px + env(safe-area-inset-bottom)) !important; }
   body.player .pbar #autoBtn { position: fixed; left: 10px; top: calc(env(safe-area-inset-top) + 10px); }
 }
+
+/* ---------- play together ---------- */
+#ghostInteract { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 300px); z-index: 32;
+  background: #ffcb3d; color: #1a1500; border: 0; font-weight: 800; padding: 10px 16px; border-radius: 999px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+#ghostBadge { position: fixed; left: 10px; top: calc(env(safe-area-inset-top) + 10px); z-index: 30; font-size: 12px; font-weight: 700;
+  background: rgba(15,15,20,.75); color: #fff; padding: 5px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,.2); }
+@media (orientation: landscape) { #ghostInteract { bottom: calc(env(safe-area-inset-bottom) + 70px); } #ghostBadge { top: auto; bottom: calc(env(safe-area-inset-bottom) + 52px); left: 50%; transform: translateX(-50%); } }
+#ghostSheet .k { font-weight: 600; } #ghostSheet .d { font-size: 12px; color: var(--muted); }
+#ghostSheet input[type=text] { width: 100%; }
+
+/* iPhone install guide: arrow nudging toward Safari's bottom-right ••• button */
+.ios-arrow { position: fixed; right: 26px; bottom: 6px; font-size: 30px; color: #ffd84a; animation: nudge 1s ease-in-out infinite; pointer-events: none; z-index: 30; }
+@keyframes nudge { 0%,100% { transform: translateY(0); } 50% { transform: translateY(8px); } }
