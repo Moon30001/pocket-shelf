@@ -618,6 +618,8 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     const btn = $("#autoBtn"), emu = window.EJS_emulator;
     if (!btn || !emu || !emu.canvas) return;
     btn.style.cssText = "";
+    const groups = emu.virtualGamepad ? emu.virtualGamepad.querySelectorAll(".ejs_virtualGamepad_left, .ejs_virtualGamepad_right") : [];
+    groups.forEach(g => g.style.transform = "");          // measure from EmulatorJS's own layout
     if (innerWidth > innerHeight) return;                 // landscape: CSS puts it in the left side bar
     let aspect = 1.5;
     try { aspect = emu.gameManager.getVideoDimensions("aspect") || aspect; } catch (e) {}
@@ -635,6 +637,13 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     btn.style.left = "auto"; btn.style.bottom = "auto";
     btn.style.top = (controlsTop - pictureBottom >= 48 ? pictureBottom + 10 : c.top + 8) + "px";
     if (controlsTop - pictureBottom < 48) btn.style.right = "52px";   // sit beside the ☰ menu
+    // Portrait: lift the D-pad, A/B and L/R up into the empty space under the game (just below Auto),
+    // leaving a gap above the bottom row (Library, Select, Start, Games).
+    if (controlsTop - pictureBottom >= 48 && groups.length) {
+      const target = pictureBottom + 10 + btn.offsetHeight + 14;
+      const lift = Math.round(controlsTop - target);
+      if (lift > 8) groups.forEach(g => g.style.transform = `translateY(${-lift}px)`);
+    }
   }
 
   window.PocketAutoInit = function (ctx) {
