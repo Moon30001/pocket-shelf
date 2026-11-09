@@ -641,7 +641,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     // leaving a gap above the bottom row (Library, Select, Start, Games).
     if (controlsTop - pictureBottom >= 48 && groups.length) {
       const target = pictureBottom + 10 + btn.offsetHeight + 14;
-      const lift = Math.round(controlsTop - target);
+      const lift = Math.round((controlsTop - target) * 0.55);   // about halfway: room under Auto and above the bottom row
       if (lift > 8) groups.forEach(g => g.style.transform = `translateY(${-lift}px)`);
     }
   }
