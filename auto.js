@@ -620,6 +620,8 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     btn.style.cssText = "";
     const groups = emu.virtualGamepad ? emu.virtualGamepad.querySelectorAll(".ejs_virtualGamepad_left, .ejs_virtualGamepad_right") : [];
     groups.forEach(g => g.style.transform = "");          // measure from EmulatorJS's own layout
+    const dpad = emu.virtualGamepad && emu.virtualGamepad.querySelector(".ejs_dpad_main");
+    if (dpad) dpad.style.transform = "";
     if (innerWidth > innerHeight) return;                 // landscape: CSS puts it in the left side bar
     let aspect = 1.5;
     try { aspect = emu.gameManager.getVideoDimensions("aspect") || aspect; } catch (e) {}
@@ -643,6 +645,23 @@ Keep your notes updated with progress (badges, team, current objective, where yo
       const target = pictureBottom + 10 + btn.offsetHeight + 14;
       const lift = Math.round((controlsTop - target) * 0.55);   // about halfway: room under Auto and above the bottom row
       if (lift > 8) groups.forEach(g => g.style.transform = `translateY(${-lift}px)`);
+      // never let L/R slide under the Auto button
+      const autoBottom = btn.getBoundingClientRect().bottom + 8;
+      let lrTop = innerHeight;
+      emu.virtualGamepad.querySelectorAll(".b_l, .b_r").forEach(el => { const r = el.getBoundingClientRect(); if (r.height) lrTop = Math.min(lrTop, r.top); });
+      if (lrTop < autoBottom && lift > 8) { const fix = Math.min(lift, Math.ceil(autoBottom - lrTop)); groups.forEach(g => g.style.transform = `translateY(${-(lift - fix)}px)`); }
+      // D-pad a bit lower: level with A/B, but clear of Select/Start
+      if (dpad) {
+        const d = dpad.getBoundingClientRect();
+        const ab = [...emu.virtualGamepad.querySelectorAll(".b_a, .b_b")].map(e => e.getBoundingClientRect()).filter(r => r.height);
+        let floor = innerHeight;
+        emu.virtualGamepad.querySelectorAll(".b_select, .b_start").forEach(el => { const r = el.getBoundingClientRect(); if (r.height) floor = Math.min(floor, r.top); });
+        if (ab.length && d.height) {
+          const abMid = ab.reduce((t, r) => t + r.top + r.height / 2, 0) / ab.length;
+          const down = Math.max(0, Math.min(abMid - (d.top + d.height / 2), floor - 12 - d.bottom));
+          if (down > 4) dpad.style.transform = `translateY(${Math.round(down)}px)`;
+        }
+      }
     }
   }
 
