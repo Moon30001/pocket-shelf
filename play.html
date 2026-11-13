@@ -46,6 +46,7 @@
 <script src="qrcode.js"></script>
 <script src="remote.js"></script>
 <script src="tour.js"></script>
+<script src="joystick.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get("id");
@@ -196,6 +197,7 @@ function fail(msg) {
       PocketAutoInit({ getGame: () => game, saveGame: (g) => Store.putGame(g), getRom: async () => new Uint8Array(await rom.data.arrayBuffer()) });
       PocketRemoteInit({ getGame: () => game });
       PocketGhosts.init({ getGame: () => game, getMem: () => window.PocketGameMem(), leaveTo: (url) => leave(url) });
+      PocketRoundPad.init(EJS_emulator);                     // round thumb pad instead of the cross
       setTimeout(() => PocketTour.maybe("play", [
         { title: "You're in! 🎮", body: `<p>Use the on-screen buttons to play. To save, use the game's own <b>Save</b> option in its menu (<b>Start</b>). Pocket Shelf keeps that save on this phone automatically.</p>` },
         { target: "#autoBtn", title: "Auto", body: `<p>Extra helpers live here:</p><ul><li><b>Play together</b>: see friends in your world (FireRed, LeafGreen, Emerald)</li><li><b>Train</b>: levels up your team for you</li><li><b>AI play</b> and <b>Game info</b></li></ul>` },
