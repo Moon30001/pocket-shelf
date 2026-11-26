@@ -624,6 +624,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     groups.forEach(g => g.style.transform = "");          // measure from EmulatorJS's own layout
     const dpad = emu.virtualGamepad && emu.virtualGamepad.querySelector(".ejs_dpad_main");
     if (dpad) dpad.style.transform = "";
+    emu.canvas.style.transform = "";
     if (innerWidth > innerHeight) return;                 // landscape: CSS puts it in the left side bar
     let aspect = 1.5;
     try { aspect = emu.gameManager.getVideoDimensions("aspect") || aspect; } catch (e) {}
@@ -653,6 +654,16 @@ Keep your notes updated with progress (badges, team, current objective, where yo
       emu.virtualGamepad.querySelectorAll(".b_l, .b_r").forEach(el => { const r = el.getBoundingClientRect(); if (r.height) lrTop = Math.min(lrTop, r.top); });
       if (lrTop < autoBottom && lift > 8) { const fix = Math.min(lift, Math.ceil(autoBottom - lrTop)); groups.forEach(g => g.style.transform = `translateY(${-(lift - fix)}px)`); }
       // D-pad a bit lower: level with A/B, but clear of Select/Start
+      // Phones held upright: Auto sits between L and R, and the game picture slides down to just above L/R
+      // (no empty strip between the picture and the controls).
+      const lr = [...emu.virtualGamepad.querySelectorAll(".b_l, .b_r")].map(el => el.getBoundingClientRect()).filter(r => r.height);
+      if (lr.length === 2 && (navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches)) {
+        const [l, r] = lr[0].left < lr[1].left ? lr : [lr[1], lr[0]], mid = (l.top + l.bottom) / 2;
+        btn.style.right = "auto"; btn.style.left = "50%"; btn.style.transform = "translateX(-50%)";
+        btn.style.top = Math.round(mid - btn.offsetHeight / 2) + "px";
+        const down = Math.round(Math.min(l.top, r.top) - 12 - pictureBottom);
+        if (down > 4) emu.canvas.style.transform = `translateY(${down}px)`;
+      }
       if (dpad) {
         const d = dpad.getBoundingClientRect();
         const ab = [...emu.virtualGamepad.querySelectorAll(".b_a, .b_b")].map(e => e.getBoundingClientRect()).filter(r => r.height);
