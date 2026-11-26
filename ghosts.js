@@ -17,7 +17,107 @@
     if (!mem || !mem.supported) return null;
     const L = mem.location();
     return { t: "pos", id: me.id, name: me.name, color: me.color, fam: FAMILY_MAPS(mem.profile.family), g: L.mapGroup, n: L.mapNum, x: L.x, y: L.y, f: L.facing,
-      field: mem.inOverworld(), at: Date.now() };
+      field: mem.inOverworld(), gfx: myLook(), at: Date.now() };
+  }
+
+  // ---------- real trainer sprites from the game's ROM ----------
+  // The overworld sprite table (pointers to graphics info) and the palette table are found by their shape, so hacks work too.
+  // Each player shares a sprite number; everyone draws it from their own copy of the game.
+  let kit;   // undefined = not tried yet, null = not found
+  function spriteKit() {
+    if (kit !== undefined) return kit;
+    kit = null;
+    const r = mem && mem.rom; if (!r) return (kit = undefined, null);
+    const N = r.length, ROM = 0x08000000;
+    const u16 = (o) => r[o] | (r[o + 1] << 8), u32 = (o) => (r[o] | (r[o + 1] << 8) | (r[o + 2] << 16) | (r[o + 3] << 24)) >>> 0;
+    const okp = (p) => p >= ROM && p < ROM + N;
+    const info = (p) => { if (!okp(p) || p & 3) return false; const o = p - ROM, w = u16(o + 8), h = u16(o + 10);
+      return u16(o) === 0xFFFF && (w === 16 || w === 32 || w === 64) && (h === 16 || h === 32 || h === 64) && okp(u32(o + 28)) && okp(u32(o + 24)); };
+    let table = null;
+    for (let o = 0; o < N - 4; o += 4) {
+      if (!info(u32(o))) continue;
+      let k = o; while (k < N - 4 && info(u32(k))) k += 4;
+      const n = (k - o) >> 2; if (n > 100 && (!table || n > table.n)) table = { o, n };
+      o = k;
+    }
+    let pal = null;
+    for (let o = 0; o < N - 8; o += 4) {
+      let k = o; while (k < N - 8 && okp(u32(k)) && u16(k + 4) >= 0x1100 && u16(k + 4) <= 0x11FF) k += 8;
+      const n = (k - o) >> 3; if (n >= 10 && (!pal || n > pal.n)) pal = { o, n };
+      if (k > o) o = k - 4;
+    }
+    if (!table || !pal) return null;
+    const pals = {}; for (let i = 0; i < pal.n; i++) pals[u16(pal.o + i * 8 + 4)] = u32(pal.o + i * 8) - ROM;
+    const cache = new Map();
+    kit = {
+      count: table.n,
+      gfx(id) {
+        if (id < 0 || id >= table.n) return null;
+        const g = u32(table.o + id * 4) - ROM, p = pals[u16(g + 2)];
+        return p === undefined ? null : { g, w: u16(g + 8), h: u16(g + 10), images: u32(g + 28) - ROM, pal: p };
+      },
+      frame(id, f) {   // → canvas, or null
+        const key = id + ":" + f; if (cache.has(key)) return cache.get(key);
+        let c = null;
+        try {
+          const s = kit.gfx(id);
+          if (s) {
+            const ptr = u32(s.images + f * 8);
+            if (okp(ptr)) {
+              const data = ptr - ROM, cols = [null];
+              for (let i = 1; i < 16; i++) { const v = u16(s.pal + i * 2); cols.push([(v & 31) << 3, ((v >> 5) & 31) << 3, ((v >> 10) & 31) << 3]); }
+              c = document.createElement("canvas"); c.width = s.w; c.height = s.h;
+              const cx = c.getContext("2d"), im = cx.createImageData(s.w, s.h), tw = s.w >> 3;
+              let any = false;
+              for (let t = 0; t < tw * (s.h >> 3); t++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+                const b = r[data + t * 32 + y * 4 + (x >> 1)], v = x & 1 ? b >> 4 : b & 15;
+                if (!v) continue;
+                const px = ((t % tw) * 8 + x), py = (Math.floor(t / tw) * 8 + y), at = (py * s.w + px) * 4;
+                im.data[at] = cols[v][0]; im.data[at + 1] = cols[v][1]; im.data[at + 2] = cols[v][2]; im.data[at + 3] = 255; any = true;
+              }
+              cx.putImageData(im, 0, 0);
+              if (!any) c = null;
+            }
+          }
+        } catch (e) { c = null; }
+        cache.set(key, c); return c;
+      },
+      // people only (16×32 standing sprites), for the look picker
+      people() { const out = []; for (let i = 0; i < table.n; i++) { const s = kit.gfx(i); if (s && s.w === 16 && s.h === 32 && kit.frame(i, 0)) out.push(i); } return out; },
+    };
+    return kit;
+  }
+  // which sprite I show: the one picked in "Your look", or whatever my game is showing right now (walking, bike, surf…)
+  function myLook() {
+    let pick = -1; try { const v = localStorage.getItem("ps_player_look"); if (v !== null && v !== "") pick = +v; } catch (e) {}
+    if (pick >= 0) return pick;
+    try { const rd = mem.reader, id = rd.u8(mem.ram.playerAvatar + 5); return rd.u8(mem.ram.objectEvents + id * 0x24 + 5); } catch (e) { return -1; }
+  }
+  // Gen 3 frames: 0 down, 1 up, 2 left (right = left mirrored), walking 3–4 down, 5–6 up, 7–8 left
+  function drawSprite(g, cx, top, scale, gfx, facing, walking, step) {
+    const k = spriteKit(); if (!k || gfx == null || gfx < 0) return false;
+    const base = { 1: 0, 2: 1, 3: 2, 4: 2 }[facing] ?? 0, walk = { 1: [3, 4], 2: [5, 6], 3: [7, 8], 4: [7, 8] }[facing] || [3, 4];
+    const c = (walking && k.frame(gfx, walk[step & 1])) || k.frame(gfx, base);
+    if (!c) return false;
+    const w = c.width * scale, h = c.height * scale, x = cx - w / 2, y = top + 32 * scale - h;
+    g.save(); g.imageSmoothingEnabled = false;
+    if (facing === 4) { g.translate(x + w, y); g.scale(-1, 1); g.drawImage(c, 0, 0, w, h); } else g.drawImage(c, x, y, w, h);
+    g.restore();
+    return true;
+  }
+  function lookPicker(back) {
+    const k = spriteKit();
+    if (!k) { sheet(`<h3>Your look</h3><div class="sub">Couldn't find this game's trainer sprites.</div><div class="actions"><button class="btn ghost full" data-g="back">Back</button></div>`, () => back()); return; }
+    let cur = ""; try { cur = localStorage.getItem("ps_player_look") || ""; } catch (e) {}
+    const tile = (i) => { const c = k.frame(i, 0); return `<button data-g="look-${i}" style="all:unset;cursor:pointer;display:grid;place-items:center;padding:4px;border-radius:10px;background:${String(i) === cur ? "#3a3010" : "var(--panel-2)"};outline:${String(i) === cur ? "2px solid var(--accent)" : "none"}"><img src="${c.toDataURL()}" style="width:32px;height:64px;image-rendering:pixelated"></button>`; };
+    sheet(`<h3>Your look</h3><div class="sub">How friends see you walking around. Picked from this game's own trainers.</div>
+      <button class="btn ${cur === "" ? "primary" : "ghost"} full" data-g="look-game" style="width:100%;margin-bottom:10px">Same as in my game</button>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(48px,1fr));gap:6px;max-height:50vh;overflow:auto">${k.people().map(tile).join("")}</div>
+      <div class="actions"><button class="btn ghost full" data-g="back">Done</button></div>`, (a) => {
+      if (a === "back") return back();
+      try { localStorage.setItem("ps_player_look", a === "look-game" ? "" : a.slice(5)); } catch (e) {}
+      lookPicker(back);
+    });
   }
 
   // ---------- networking ----------
@@ -116,7 +216,8 @@
       const gx = (o.px ?? o.x) + ((o.x - (o.px ?? o.x)) * t), gy = (o.py ?? o.y) + ((o.y - (o.py ?? o.y)) * t);
       const sx = (PLAYER_TILE.x + (gx - i.x) * 16 + 8) * scale, sy = (PLAYER_TILE.y + (gy - i.y) * 16 - 16) * scale;
       if (sx < -40 * scale || sx > 280 * scale || sy < -40 * scale || sy > 200 * scale) continue;
-      drawTrainer(g, sx, sy, scale, o.color, o.f);
+      const walking = t < 1 && (o.px !== o.x || o.py !== o.y);
+      if (!drawSprite(g, sx, sy, scale, o.gfx, o.f, walking && t < 0.6, (o.x + o.y) & 1)) drawTrainer(g, sx, sy, scale, o.color, o.f);
       g.font = `${Math.round(7 * scale)}px system-ui, sans-serif`; g.textAlign = "center";
       g.fillStyle = "rgba(0,0,0,.6)"; const tw = g.measureText(o.name).width + 6 * scale;
       g.fillRect(sx - tw / 2, sy - 9 * scale, tw, 9 * scale);
@@ -200,7 +301,7 @@
     }
     if (role) {
       sheet(`<h3>Play together</h3><div class="sub">${others.size + 1} player(s) connected. Friends on the same map show up walking around.</div>
-        <div class="actions"><button class="btn danger full" data-g="leave">Leave</button><button class="btn ghost full" data-g="close">Close</button></div>`, (a) => { if (a === "leave") stop(); closeSheet(); });
+        <div class="actions"><button class="btn ghost full" data-g="look">👤 Your look</button><button class="btn danger full" data-g="leave">Leave</button><button class="btn ghost full" data-g="close">Close</button></div>`, (a) => { if (a === "look") return lookPicker(openMenu); if (a === "leave") stop(); closeSheet(); });
       return;
     }
     const online = navigator.onLine;
@@ -209,10 +310,12 @@
       <label class="k" style="display:block;margin:6px 0">Your name</label><input type="text" id="ghostName" maxlength="10" value="${esc(me.name)}">
       <div class="actions" style="margin-top:14px">
         <button class="btn primary" data-g="host">Host</button><button class="btn ghost" data-g="join">Join</button>
+        <button class="btn ghost full" data-g="look">👤 Your look</button>
         <button class="btn ghost full" data-g="close">Cancel</button></div>
       <p class="d" style="margin-top:10px">${online ? "Online: friends can be anywhere." : "No internet: everyone joins the same Wi-Fi or hotspot and you'll scan each other's codes."}</p>`,
       async (a) => {
         if (a === "close") return closeSheet();
+        if (a === "look") { me.name = ($("#ghostName").value.trim() || "Player").slice(0, 10); try { localStorage.setItem("ps_player_name", me.name); } catch (e) {} return lookPicker(openMenu); }
         me.name = ($("#ghostName").value.trim() || "Player").slice(0, 10); try { localStorage.setItem("ps_player_name", me.name); } catch (e) {}
         try {
           if (a === "host") {
@@ -278,6 +381,7 @@
       addEventListener("pagehide", () => { try { broadcast({ t: "bye", id: me && me.id }); } catch (e) {} });
     },
     open: openMenu,
+    _sprites: () => spriteKit(),
     _state: () => ({ role, others: [...others.values()], me, links: links.length }),
     // for other features riding on the same connection
     on: (fn) => hooks.push(fn),
