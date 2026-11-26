@@ -50,10 +50,12 @@
   <div class="tabs" id="tabs">
     <button data-tab="move" class="on">Move</button>
     <button data-tab="trade">Trade</button>
+    <button data-tab="journey">Journey</button>
     <button data-tab="restore">Restore</button>
   </div>
   <section id="tab-move"></section>
   <section id="tab-trade" hidden></section>
+  <section id="tab-journey" hidden></section>
   <section id="tab-restore" hidden></section>
 </main>
 <div class="toast" id="toast"></div>
@@ -65,6 +67,7 @@
 <script src="pksave-gen3.js"></script>
 <script src="pksave-gen45.js"></script>
 <script src="pkconvert.js"></script>
+<script src="journey.js"></script>
 <script src="peerjs.min.js"></script>
 <script src="qrcode.js"></script>
 <script src="jsqr.js"></script>
@@ -492,11 +495,105 @@ function onMsg(raw) {
   } catch (e) { console.warn("Trade message ignored:", e); }
   renderTrade();
 }
+// ================= JOURNEY =================
+// A chain of games played as one adventure: beat the Champion in one region to unlock the next, then bring 1–2 Pokémon along.
+const jr = { building: [], picked: new Set(), prev: null, next: null, armed: "" };
+const gameById = (id) => games.find(g => g.id === id);
+function arm(key) { if (jr.armed === key) { jr.armed = ""; return true; } jr.armed = key; setTimeout(() => { if (jr.armed === key) { jr.armed = ""; renderJourney(); } }, 4000); renderJourney(); return false; }
+async function renderJourney() {
+  const el = $("#tab-journey"), j = PocketJourney.load();
+  if (!j) {
+    const left = games.filter(g => !jr.building.includes(g.id));
+    el.innerHTML = `<p class="hint">Play several games as one big adventure. Each game is a region. Beat the Champion to unlock the next region, start it with its own new starter, and bring 1–2 Pokémon along from the region before.</p>
+      ${jr.building.map((id, i) => `<div class="card" style="display:flex;align-items:center;gap:10px"><b>${i + 1}</b><span style="flex:1">${esc((gameById(id) || {}).title || "?")}</span><button class="btn ghost" data-jrm="${i}">✕</button></div>`).join("")}
+      <div class="field"><label>${jr.building.length ? "Add the next region" : "First region"}</label><select id="jrAdd">${gameOptions("", g => left.includes(g), "Choose a game")}</select></div>
+      <p class="hint">Playing with a friend? Set up the same games in the same order on both phones, so Hero vs Rival knows you're in the same region.</p>
+      <button class="btn primary big" id="jrStart" ${jr.building.length >= 2 ? "" : "disabled style='opacity:.4'"}>Start the journey</button>`;
+    $("#jrAdd").onchange = (e) => { if (e.target.value) jr.building.push(e.target.value); renderJourney(); };
+    el.querySelectorAll("[data-jrm]").forEach(b => b.onclick = () => { jr.building.splice(+b.dataset.jrm, 1); renderJourney(); });
+    $("#jrStart").onclick = () => { PocketJourney.save({ regions: jr.building.slice(), current: 0, done: {}, bring: false, started: Date.now() }); jr.building = []; toast("Journey started. Good luck!"); renderJourney(); };
+    return;
+  }
+  const cur = gameById(j.regions[j.current]), next = gameById(j.regions[j.current + 1]), last = j.current === j.regions.length - 1;
+  let html = j.regions.map((id, i) => {
+    const g = gameById(id), state = j.done[i] ? "✓ Champion beaten" : i === j.current ? "▶ You're here" : "🔒 Locked";
+    return `<div class="card" style="display:flex;align-items:center;gap:10px;${i === j.current ? "border-color:var(--accent)" : ""}"><b>${i + 1}</b><span style="flex:1">${esc(g ? g.title : "Missing game")}</span><span class="hint">${state}</span></div>`;
+  }).join("");
+  if (!cur) html += `<div class="empty-s">This region's game isn't on your shelf any more. Add it back, or end the journey below.</div>`;
+  else if (j.bring) html += await bringHtml(j);
+  else if (j.done[j.current] && last) html += `<div class="card"><b>Journey complete! 🏆</b><div class="hint">You beat the Champion in every region.</div></div>`;
+  else {
+    const fam = PocketJourney.familyOf(cur);
+    html += `<div class="card"><b>Beat the Champion in ${esc(cur.title)}</b>${next ? `<div class="hint">That unlocks ${esc(next.title)}.</div>` : `<div class="hint">This is the last region.</div>`}
+      <div class="row2" style="margin-top:10px"><a class="btn ghost" style="text-decoration:none;text-align:center" href="play.html?id=${encodeURIComponent(cur.id)}">Play</a>
+      ${fam ? `<button class="btn primary" id="jrCheck">I'm the Champion, check my save</button>` : `<button class="btn primary" id="jrManual">${jr.armed === "manual" ? "Tap again to confirm" : "I beat the Champion"}</button>`}</div>
+      ${fam ? `<p class="hint" style="margin-top:8px">Save in-game after the Hall of Fame, then check.</p>` : `<p class="hint" style="margin-top:8px">Pocket Shelf can't read a Champion win from this game yet, so this one is on your honour.</p>`}</div>`;
+  }
+  html += `<button class="btn danger big" id="jrEnd">${jr.armed === "end" ? "Tap again to end the journey" : "End journey"}</button>
+    <p class="hint">Ending the journey doesn't touch any saves.</p>`;
+  el.innerHTML = html;
+  const unlock = () => { j.done[j.current] = true; if (j.current < j.regions.length - 1) { j.current++; j.bring = true; } PocketJourney.save(j); jr.picked.clear(); renderJourney(); };
+  if ($("#jrCheck")) $("#jrCheck").onclick = async () => {
+    const rec = await Store.getSave(cur.id), r = PocketJourney.checkCleared(cur, rec && rec.data ? new Uint8Array(rec.data) : null);
+    if (r.cleared) { toast(next ? `Champion! ${next.title} is unlocked.` : "Champion! Journey complete.", 5000); unlock(); }
+    else toast(r.why === "No save yet." ? "No save found yet. Save in-game first." : "Not yet. The save doesn't show a Hall of Fame entry. Save in-game after the credits, then check again.", 6000);
+  };
+  if ($("#jrManual")) $("#jrManual").onclick = () => { if (arm("manual")) { toast(next ? `${next.title} is unlocked.` : "Journey complete!", 4000); unlock(); } };
+  $("#jrEnd").onclick = () => { if (arm("end")) { localStorage.removeItem("ps_journey"); toast("Journey ended."); renderJourney(); } };
+  el.querySelectorAll("#tab-journey .mon[data-key]").forEach(b => b.onclick = () => {
+    const k = b.dataset.key;
+    if (jr.picked.has(k)) jr.picked.delete(k); else if (jr.picked.size < 2) jr.picked.add(k); else toast("You can bring up to 2.");
+    renderJourney();
+  });
+  if ($("#jrBring")) $("#jrBring").onclick = () => bringAlong(j);
+  if ($("#jrSkip")) $("#jrSkip").onclick = () => { if (arm("skip")) { j.bring = false; PocketJourney.save(j); renderJourney(); } };
+}
+async function bringHtml(j) {
+  const prevGame = gameById(j.regions[j.current - 1]), nextGame = gameById(j.regions[j.current]);
+  jr.prev = prevGame ? await openGame(prevGame) : { error: "The previous region's game isn't on your shelf." };
+  jr.next = await openGame(nextGame);
+  let html = `<div class="card"><b>New region: ${esc(nextGame.title)}</b>`;
+  if (jr.next.error) return html + `<div class="hint" style="margin-top:6px">1. Start ${esc(nextGame.title)} and pick your new starter.<br>2. Save in-game.<br>3. Come back here to bring 1–2 Pokémon from ${esc(prevGame ? prevGame.title : "your last region")}.</div>
+    <a class="btn primary big" style="display:block;text-decoration:none;text-align:center" href="play.html?id=${encodeURIComponent(nextGame.id)}">Start ${esc(nextGame.title)}</a>
+    <button class="btn ghost big" id="jrSkip">${jr.armed === "skip" ? "Tap again: start fresh, bring no one" : "Bring no one"}</button></div>`;
+  if (jr.prev.error) return html + `<div class="empty-s">${esc(jr.prev.error)}</div><button class="btn ghost big" id="jrSkip">${jr.armed === "skip" ? "Tap again to continue" : "Continue without them"}</button></div>`;
+  const list = jr.prev.save.list(), party = list.filter(x => x.where === "party"), boxes = list.filter(x => x.where === "box");
+  html += `<div class="hint">Pick up to 2 Pokémon to bring from ${esc(prevGame.title)}. The rest stay there.</div></div>
+    <div class="where">PARTY</div><div class="mons">${party.map(x => monCard(x, { selected: jr.picked.has(keyOf(x)), gen: jr.prev.save.gen })).join("")}</div>
+    ${boxes.length ? `<div class="where">PC BOXES</div><div class="mons">${boxes.map(x => monCard(x, { selected: jr.picked.has(keyOf(x)), gen: jr.prev.save.gen })).join("")}</div>` : ""}`;
+  const results = [...jr.picked].map(k => { const x = list.find(y => keyOf(y) === k); return { x, r: PkSave.convert(x.mon, jr.prev.save.gen, jr.next.save.gen, { targetVersion: jr.next.save.version }) }; });
+  if (results.length) html += `<div class="card">` + results.map(({ x, r }) => `<div><b class="${r.ok ? "ok" : "no"}">${r.ok ? "✓" : "✗"}</b> ${esc(x.mon.isNicknamed ? x.mon.nickname : spName(x.mon.species))} (Lv ${x.mon.level})${r.ok ? "" : ` · ${esc(r.reason)}`}</div>` + (r.ok ? r.notes.map(n => `<div class="note">${esc(n)}</div>`).join("") : "")).join("") + `</div>`;
+  const ok = results.filter(r => r.r.ok).length;
+  html += `<button class="btn primary big" id="jrBring" ${ok ? "" : "disabled style='opacity:.4'"}>Bring ${ok || ""} to ${esc(nextGame.title)}</button>
+    <button class="btn ghost big" id="jrSkip">${jr.armed === "skip" ? "Tap again: bring no one" : "Bring no one"}</button>`;
+  return html;
+}
+async function bringAlong(j) {
+  try {
+    const from = await openGame(jr.prev.game), to = await openGame(jr.next.game);
+    if (from.error || to.error) throw new Error(from.error || to.error);
+    const list = from.save.list(), shown = jr.prev.save.list(), moved = [];
+    const picked = [...jr.picked].map(k => {
+      const now = list.find(y => keyOf(y) === k), then = shown.find(y => keyOf(y) === k);
+      if (!now || !then || monId(now.mon) !== monId(then.mon)) throw new Error("That game's save changed since you picked. Pick again.");
+      return now;
+    });
+    for (const x of picked) { const r = PkSave.convert(x.mon, from.save.gen, to.save.gen, { targetVersion: to.save.version }); if (!r.ok) continue; to.save.insert(r.mon); moved.push(x); }
+    if (!moved.length) throw new Error("None of them can go to that game.");
+    moved.filter(x => x.where === "box").sort((a, b) => (b.box - a.box) || (b.slot - a.slot)).forEach(x => from.save.remove(x));
+    moved.filter(x => x.where === "party").sort((a, b) => b.slot - a.slot).forEach(x => from.save.remove(x));
+    await commit(`Journey: brought ${moved.length} Pokémon to ${to.game.title}`, [from, to]);
+    j.bring = false; PocketJourney.save(j); jr.picked.clear();
+    toast(`They're waiting in the PC in ${to.game.title}. Open the game and visit a Pokémon Center.`, 6000);
+    renderJourney();
+  } catch (e) { toast("Couldn't bring them: " + e.message, 6000); }
+}
+
 // ---------- tabs ----------
 function showTab(name) {
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
-  ["move", "trade", "restore"].forEach(t => $("#tab-" + t).hidden = t !== name);
-  if (name === "move") renderMove(); if (name === "trade") renderTrade(); if (name === "restore") renderRestore();
+  ["move", "trade", "journey", "restore"].forEach(t => $("#tab-" + t).hidden = t !== name);
+  if (name === "move") renderMove(); if (name === "trade") renderTrade(); if (name === "restore") renderRestore(); if (name === "journey") renderJourney();
 }
 $("#tabs").onclick = (e) => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab); };
 addEventListener("hashchange", () => { if (hostFromHash() || /tab=trade/.test(location.hash)) showTab("trade"); });
@@ -505,7 +602,7 @@ addEventListener("hashchange", () => { if (hostFromHash() || /tab=trade/.test(lo
   registerSW();
   await loadGames();
   const hp = new URLSearchParams(location.hash.slice(1));
-  showTab(hostFromHash() || hp.get("hostid") || /tab=trade/.test(location.hash) ? "trade" : "move");
+  showTab(hostFromHash() || hp.get("hostid") || /tab=trade/.test(location.hash) ? "trade" : /tab=journey/.test(location.hash) ? "journey" : "move");
   // arriving from "Play together": pick the game and connect straight away
   if (hp.get("game") && games.some(g => g.id === hp.get("game"))) {
     tr.gameId = hp.get("game"); tr.mine = await openGame(games.find(g => g.id === tr.gameId)); renderTrade();

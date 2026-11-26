@@ -11,7 +11,7 @@
 
   let ctx = null, mem = null, me = null, role = null;            // role: 'host' | 'guest'
   let peer = null, links = [], others = new Map(), sendTimer = null, drawRaf = null, emotes = new Map();
-  let offline = null;
+  let offline = null, hooks = [];                                // hooks: other features (Hero vs Rival) listening on this connection
 
   function myInfo() {
     if (!mem || !mem.supported) return null;
@@ -25,6 +25,7 @@
   function onMessage(link, msg) {
     if (!msg || !msg.t) return;
     if (role === "host" && msg.t !== "roster") broadcast(msg, link);       // host relays to everyone else
+    hooks.forEach(h => { try { h(msg); } catch (e) { console.warn("Play together hook:", e); } });
     if (msg.t === "pos") {
       const o = others.get(msg.id) || { id: msg.id, px: msg.x, py: msg.y, moveStart: 0 };
       if (o.x !== undefined && (o.x !== msg.x || o.y !== msg.y)) { o.px = o.x; o.py = o.y; o.moveStart = performance.now(); }
@@ -50,7 +51,8 @@
   }
 
   async function hostOnline() {
-    const id = "pkshelf-play-" + Math.random().toString(36).slice(2, 8);
+    const AB = "abcdefghjkmnpqrstuvwxyz23456789";                  // no 0/o or 1/l/i, so it's easy to type on a PC
+    const id = "pkshelf-play-" + Array.from({ length: 6 }, () => AB[Math.floor(Math.random() * AB.length)]).join("");
     peer = new Peer(id); role = "host";
     await new Promise((res, rej) => { peer.on("open", res); peer.on("error", rej); });
     peer.on("connection", (c) => { if (links.length >= 3) return c.close(); addLink(c); });
@@ -135,7 +137,9 @@
     const o = others.get(id); if (!o) return;
     sheet(`<h3>${esc(o.name)}</h3><div class="sub">Playing nearby on the same map.</div>
       <div class="actions"><button class="btn ghost" data-g="wave">👋 Wave</button><button class="btn primary" data-g="trade">⇄ Trade</button>
+      ${window.PocketRivals ? `<button class="btn primary full" data-g="battle">⚔ Battle</button>` : ""}
       <button class="btn ghost full" data-g="close">Close</button></div>`, (a) => {
+      if (a === "battle") { closeSheet(); return PocketRivals.challenge(id, o.name); }
       if (a === "wave") { const msg = { t: "emote", id: me.id, text: "👋" }; emotes.set(me.id, { text: "👋", until: Date.now() + 2500 }); broadcast(msg); closeSheet(); }
       if (a === "trade") { if (peer && !offline) { const tradeId = "pkshelf-trade-" + Math.random().toString(36).slice(2, 9); pendingTrade = tradeId; broadcast({ t: "trade-invite", from: me.id, fromName: me.name, to: id, tradeId }); sheet(`<h3>Asked ${esc(o.name)} to trade…</h3><div class="sub">Waiting for them to accept.</div><div class="actions"><button class="btn ghost full" data-g="close">Cancel</button></div>`, () => closeSheet()); }
         else sheet(`<h3>Trade with ${esc(o.name)}</h3><div class="sub">For an offline trade, both save in-game, then open <b>⇄ Pokémon → Trade → Offline</b> from the library.</div><div class="actions"><button class="btn ghost full" data-g="close">OK</button></div>`, () => closeSheet()); }
@@ -215,7 +219,10 @@
             if (online) {
               const code = await hostOnline();
               start();
-              sheet(`<h3>Hosting</h3><div class="sub">Friends tap <b>Auto → Play together → Join</b> and scan this.</div><div class="qr" style="width:min(240px,70vw);margin:10px auto;background:#fff;border-radius:12px;padding:8px">${PocketOffline.qrSvg(code)}</div><div class="actions"><button class="btn primary full" data-g="close">Start playing</button></div>`, () => closeSheet());
+              const room = code.slice(-6).toUpperCase();
+              sheet(`<h3>Hosting</h3><div class="sub">Friends tap <b>Auto → Play together → Join</b> and scan this, or type the room code (handy on a PC).</div><div class="qr" style="width:min(240px,70vw);margin:10px auto;background:#fff;border-radius:12px;padding:8px">${PocketOffline.qrSvg(code)}</div>
+                <div style="text-align:center;font:800 28px/1.2 ui-monospace,monospace;letter-spacing:.25em;margin:4px 0 2px">${room}</div><div class="sub" style="text-align:center">Room code</div>
+                <div class="actions"><button class="btn primary full" data-g="close">Start playing</button></div>`, () => closeSheet());
             } else {
               offline = await PocketOffline.host(); role = "host"; addLink(offline.conn); start();
               sheet(`<h3>Hosting offline</h3><div class="sub">1. Your friend taps <b>Join</b> and scans this.<br>2. Then tap below and scan the code on their phone.</div><div class="qr" style="width:min(240px,70vw);margin:10px auto;background:#fff;border-radius:12px;padding:8px">${PocketOffline.qrSvg(offline.code)}</div>
@@ -226,7 +233,7 @@
             }
           }
           if (a === "join") {
-            const code = await PocketOffline.scan("Scan the code on the host's phone");
+            const code = await askJoinCode();
             if (code.startsWith("PSG1:")) { await joinOnline(code); start(); closeSheet(); }
             else {
               offline = await PocketOffline.guest(code); role = "guest"; addLink(offline.conn); start();
@@ -235,6 +242,31 @@
           }
         } catch (e) { if (e.message !== "cancelled") alertSheet("Couldn't connect: " + (e.type || e.message)); }
       });
+  }
+  // Join by scanning the host's QR code, or by typing their 6-letter room code (no camera needed, e.g. on a PC)
+  function askJoinCode() {
+    return new Promise((resolve, reject) => {
+      const typeIt = () => {
+        sheet(`<h3>Type the room code</h3><div class="sub">It's the 6 letters under the host's QR code.</div>
+          <input type="text" id="ghostRoom" maxlength="6" autocomplete="off" autocapitalize="characters" style="width:100%;font:800 24px ui-monospace,monospace;letter-spacing:.25em;text-align:center;text-transform:uppercase">
+          <div class="actions"><button class="btn ghost" data-g="back">Back</button><button class="btn primary" data-g="go">Join</button></div>`, (b) => {
+          if (b === "back") return choose();
+          const room = ($("#ghostRoom").value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (room.length !== 6) return;
+          closeSheet(); resolve("PSG1:pkshelf-play-" + room);
+        });
+        setTimeout(() => { const i = $("#ghostRoom"); if (i) { i.focus(); i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") $("#ghostSheet [data-g='go']").click(); }; } }, 50);
+      };
+      const choose = () => sheet(`<h3>Join</h3><div class="sub">Scan the host's QR code, or type their room code.</div>
+        <div class="actions"><button class="btn primary" data-g="scan">📷 Scan code</button><button class="btn ghost" data-g="type">⌨ Type code</button>
+        <button class="btn ghost full" data-g="cancel">Cancel</button></div>`, (b) => {
+        if (b === "cancel") { closeSheet(); return reject(new Error("cancelled")); }
+        if (b === "type") return typeIt();
+        if (b === "scan") { closeSheet(); PocketOffline.scan("Scan the code on the host's screen").then(resolve, reject); }
+      });
+      if (!navigator.onLine) return PocketOffline.scan("Scan the code on the host's phone").then(resolve, reject);   // offline codes are too long to type
+      choose();
+    });
   }
   function alertSheet(msg) { sheet(`<h3>Play together</h3><div class="sub">${esc(msg)}</div><div class="actions"><button class="btn ghost full" data-g="close">OK</button></div>`, () => closeSheet()); }
 
@@ -247,5 +279,11 @@
     },
     open: openMenu,
     _state: () => ({ role, others: [...others.values()], me, links: links.length }),
+    // for other features riding on the same connection
+    on: (fn) => hooks.push(fn),
+    send: (msg) => broadcast(msg),
+    me: () => me,
+    others: () => others,
+    connected: () => !!role,
   };
 })();
