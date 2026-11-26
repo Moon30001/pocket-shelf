@@ -209,3 +209,8 @@ body.player .ejs_dpad_main.ps-round .ejs_dpad_horizontal, body.player .ejs_dpad_
 @media (pointer: fine) {
   body.player .pbar { bottom: 66px; }
 }
+
+/* ---------- night mode: warmer, dimmer game picture (and the Play together overlay with it) ---------- */
+body.player.night #game canvas, body.player.night #ghostCanvas { filter: sepia(.35) saturate(.85) brightness(.78); }
+/* sharp pixels for the Play together overlay too */
+#ghostCanvas { image-rendering: pixelated; }

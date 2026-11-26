@@ -587,13 +587,24 @@ Keep your notes updated with progress (badges, team, current objective, where yo
         ${game.system === "gba" ? `<button class="auto-item" data-a="train"><span class="ai-ic">⚡</span><span><b>Train</b> <small style="color:var(--accent)">beta</small><br><small>Grinds here, runs at low HP, heals at the Pokémon Center and comes back. FireRed, LeafGreen, Emerald &amp; hacks</small></span></button>` : ""}
         ${game.system === "gba" && window.PocketRivals ? `<button class="auto-item" data-a="rivals"><span class="ai-ic">⚔</span><span><b>Hero vs Rival</b> <small style="color:var(--accent)">beta</small><br><small>${esc(PocketRivals.label())}</small></span></button>` : ""}
         ${game.system === "gba" ? `<button class="auto-item" data-a="together"><span class="ai-ic">👥</span><span><b>Play together</b> <small style="color:var(--accent)">beta</small><br><small>See friends walking around your world, wave, trade and battle. Up to 6 players</small></span></button>` : ""}
+        ${phoneUpright() ? `<div class="auto-item" style="cursor:default"><span class="ai-ic">🔍</span><span style="flex:1"><b>Screen size</b><br><small>Same shape, trims the sides. Sideways = biggest</small></span>
+          <span class="dirs" style="grid-template-columns:repeat(3,auto)">${[["1", "Normal"], ["1.2", "Bigger"], ["fill", "Biggest"]].map(([v, l]) => `<button data-a="zoom" data-z="${v}" style="padding:0 8px;font-size:12px;width:auto;${zoomPref() === v ? "background:var(--accent);color:#1a1500;border-color:var(--accent)" : ""}">${l}</button>`).join("")}</span></div>` : ""}
+        <div class="auto-item" style="cursor:default;flex-wrap:wrap"><span class="ai-ic">🌙</span><span style="flex:1"><b>Night mode</b><br><small>Warmer, dimmer picture for the evening</small></span>
+          <span class="dirs" style="grid-template-columns:repeat(3,auto)">${[["off", "Off"], ["on", "On"], ["auto", "Auto"]].map(([v, l]) => `<button data-a="night" data-v="${v}" style="padding:0 8px;font-size:12px;width:auto;${disp.night() === v ? "background:var(--accent);color:#1a1500;border-color:var(--accent)" : ""}">${l}</button>`).join("")}</span>
+          ${disp.night() === "auto" ? `<div style="flex-basis:100%;display:flex;gap:8px;align-items:center;padding-left:52px;font-size:13px;color:var(--muted)">From <input type="time" data-t="ps_night_from" value="${disp.from()}" style="width:auto;padding:4px 6px"> to <input type="time" data-t="ps_night_to" value="${disp.to()}" style="width:auto;padding:4px 6px"></div>` : ""}</div>
+        <div class="auto-item" style="cursor:default"><span class="ai-ic">✨</span><span style="flex:1"><b>Sharp pixels</b><br><small>Crisp edges, no blur</small></span>
+          <span class="dirs" style="grid-template-columns:repeat(2,auto)">${[["on", "On"], ["off", "Off"]].map(([v, l]) => `<button data-a="sharp" data-v="${v}" style="padding:0 8px;font-size:12px;width:auto;${disp.sharp() === v ? "background:var(--accent);color:#1a1500;border-color:var(--accent)" : ""}">${l}</button>`).join("")}</span></div>
         <button class="auto-item" data-a="advance"><span class="ai-ic">≫</span><span><b>Auto-advance</b><br><small>Mashes A at high speed to skip dialogue</small></span></button>
         <button class="auto-item" data-a="grind"><span class="ai-ic">⚔</span><span><b>Grind in grass</b><br><small>Stand in tall grass first. Walks and battles with your first move</small></span></button>
         <div class="auto-item" style="cursor:default"><span class="ai-ic">➜</span><span style="flex:1"><b>Auto-run</b><br><small>Runs until you hit something</small></span>
           <span class="dirs"><button data-a="run" data-d="UP">↑</button><button data-a="run" data-d="LEFT">←</button><button data-a="run" data-d="DOWN">↓</button><button data-a="run" data-d="RIGHT">→</button></span></div>`;
+      s.querySelector(".sheet").onchange = (e) => { const k = e.target.dataset.t; if (k && e.target.value) { try { localStorage.setItem(k, e.target.value); } catch (er) {} applyDisplay(); } };
       s.querySelector(".sheet").onclick = (e) => {
+        if (e.target.matches("input")) return;
         const el = e.target.closest("[data-a]"); if (!el || el.disabled) return;
         const a = el.dataset.a;
+        if (a === "zoom") { try { localStorage.setItem("ps_zoom", el.dataset.z); } catch (er) {} placeAutoBtn(); return openSheet("menu"); }
+        if (a === "night" || a === "sharp") { try { localStorage.setItem("ps_" + a, el.dataset.v); } catch (er) {} applyDisplay(); return openSheet("menu"); }
         if (a === "ai-setup") return openSheet("ai-setup");
         if (a === "ai") { if (!key) return openSheet("ai-setup"); closeSheet(true); return aiPlay(ctxRef); }
         closeSheet(true);
@@ -614,6 +625,25 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     setRunning(true);
   }
 
+  // ---- easier on the eyes: night mode (warm + dim, on a schedule if you like) and sharp pixels ----
+  const lsGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch (e) { return d; } };
+  const disp = { night: () => lsGet("ps_night", "off"), from: () => lsGet("ps_night_from", "20:00"), to: () => lsGet("ps_night_to", "07:00"), sharp: () => lsGet("ps_sharp", "on") };
+  function nightNow() {
+    const m = disp.night(); if (m !== "auto") return m === "on";
+    const mins = (t) => { const [h, mm] = t.split(":").map(Number); return h * 60 + (mm || 0); };
+    const d = new Date(), now = d.getHours() * 60 + d.getMinutes(), a = mins(disp.from()), b = mins(disp.to());
+    return a <= b ? now >= a && now < b : now >= a || now < b;          // overnight windows wrap past midnight
+  }
+  function applyDisplay() {
+    document.body.classList.toggle("night", nightNow());
+    const c = window.EJS_emulator && EJS_emulator.canvas;
+    if (c) c.style.imageRendering = disp.sharp() === "on" ? "pixelated" : "";
+  }
+  setInterval(applyDisplay, 60000);
+
+  const zoomPref = () => { try { return localStorage.getItem("ps_zoom") || "1"; } catch (e) { return "1"; } };
+  const phoneUpright = () => innerHeight > innerWidth && (navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches);
+
   // Keep the Auto button away from every game control:
   // portrait → right side of the empty strip under the game picture (or top-right if there's no strip, e.g. DS)
   function placeAutoBtn() {
@@ -624,6 +654,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     groups.forEach(g => g.style.transform = "");          // measure from EmulatorJS's own layout
     const dpad = emu.virtualGamepad && emu.virtualGamepad.querySelector(".ejs_dpad_main");
     if (dpad) dpad.style.transform = "";
+    emu.canvas.style.transform = "";
     if (innerWidth > innerHeight) return;                 // landscape: CSS puts it in the left side bar
     let aspect = 1.5;
     try { aspect = emu.gameManager.getVideoDimensions("aspect") || aspect; } catch (e) {}
@@ -653,6 +684,22 @@ Keep your notes updated with progress (badges, team, current objective, where yo
       emu.virtualGamepad.querySelectorAll(".b_l, .b_r").forEach(el => { const r = el.getBoundingClientRect(); if (r.height) lrTop = Math.min(lrTop, r.top); });
       if (lrTop < autoBottom && lift > 8) { const fix = Math.min(lift, Math.ceil(autoBottom - lrTop)); groups.forEach(g => g.style.transform = `translateY(${-(lift - fix)}px)`); }
       // D-pad a bit lower: level with A/B, but clear of Select/Start
+      // Phones held upright: Auto sits between L and R, and the game picture slides down to just above L/R
+      // (no empty strip between the picture and the controls).
+      const lr = [...emu.virtualGamepad.querySelectorAll(".b_l, .b_r")].map(el => el.getBoundingClientRect()).filter(r => r.height);
+      if (lr.length === 2 && (navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches)) {
+        const [l, r] = lr[0].left < lr[1].left ? lr : [lr[1], lr[0]], mid = (l.top + l.bottom) / 2;
+        btn.style.right = "auto"; btn.style.left = "50%"; btn.style.transform = "translateX(-50%)";
+        btn.style.top = Math.round(mid - btn.offsetHeight / 2) + "px";
+        const down = Math.max(0, Math.round(Math.min(l.top, r.top) - 12 - pictureBottom));
+        // Screen size: grow the picture upward into the empty space above it (its bottom edge stays just above L/R).
+        // Same shape as the real game; anything wider than the phone is trimmed equally on both sides.
+        const picH = pictureBottom - c.top, room = (pictureBottom + down) - (emu.canvas.parentElement.getBoundingClientRect().top + 4);
+        const pref = zoomPref(), max = Math.max(1, room / picH);
+        const z = Math.min(max, pref === "fill" ? 1.6 : (parseFloat(pref) || 1));
+        emu.canvas.style.transformOrigin = `50% ${Math.round(picH)}px`;
+        if (down > 4 || z > 1.01) emu.canvas.style.transform = `translateY(${down}px) scale(${z.toFixed(3)})`;
+      }
       if (dpad) {
         const d = dpad.getBoundingClientRect();
         const ab = [...emu.virtualGamepad.querySelectorAll(".b_a, .b_b")].map(e => e.getBoundingClientRect()).filter(r => r.height);
@@ -670,6 +717,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
   window.PocketAutoInit = function (ctx) {
     ctxRef = ctx;
     wireStopListeners();
+    applyDisplay();
     placeAutoBtn();
     setTimeout(placeAutoBtn, 600);
     addEventListener("resize", () => setTimeout(placeAutoBtn, 200));
