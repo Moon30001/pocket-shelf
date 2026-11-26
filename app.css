@@ -204,3 +204,8 @@ body.player .ejs_dpad_main.ps-round .ejs_dpad_horizontal, body.player .ejs_dpad_
 .ps-right { border-top-color: transparent !important; border-bottom-color: transparent !important; border-right-color: transparent !important; }
 .ps-knob { position: absolute; left: 50%; top: 50%; width: 44%; height: 44%; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none;
   background: radial-gradient(circle at 40% 35%, #6a6a76, #3c3c46); border: 2px solid rgba(255,255,255,.25); box-shadow: 0 4px 12px rgba(0,0,0,.45); }
+
+/* ---------- PC: keep Library / Auto / Games above the emulator's own toolbar (it sits at the bottom edge) ---------- */
+@media (pointer: fine) {
+  body.player .pbar { bottom: 66px; }
+}

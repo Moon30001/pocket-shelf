@@ -585,6 +585,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
         ${key ? `<button class="link-btn" data-a="ai-setup">AI settings & goal</button>` : ""}
         ${game.system === "gba" ? `<button class="auto-item" data-a="info"><span class="ai-ic">ⓘ</span><span><b>Game info</b> <small style="color:var(--accent)">beta</small><br><small>What Pocket Shelf can read from the game right now</small></span></button>` : ""}
         ${game.system === "gba" ? `<button class="auto-item" data-a="train"><span class="ai-ic">⚡</span><span><b>Train</b> <small style="color:var(--accent)">beta</small><br><small>Grinds here, runs at low HP, heals at the Pokémon Center and comes back. FireRed, LeafGreen, Emerald &amp; hacks</small></span></button>` : ""}
+        ${game.system === "gba" && window.PocketRivals ? `<button class="auto-item" data-a="rivals"><span class="ai-ic">⚔</span><span><b>Hero vs Rival</b> <small style="color:var(--accent)">beta</small><br><small>${esc(PocketRivals.label())}</small></span></button>` : ""}
         ${game.system === "gba" ? `<button class="auto-item" data-a="together"><span class="ai-ic">👥</span><span><b>Play together</b> <small style="color:var(--accent)">beta</small><br><small>See friends walking around your world, wave and trade. Up to 4 players</small></span></button>` : ""}
         <button class="auto-item" data-a="advance"><span class="ai-ic">≫</span><span><b>Auto-advance</b><br><small>Mashes A at high speed to skip dialogue</small></span></button>
         <button class="auto-item" data-a="grind"><span class="ai-ic">⚔</span><span><b>Grind in grass</b><br><small>Stand in tall grass first. Walks and battles with your first move</small></span></button>
@@ -599,6 +600,7 @@ Keep your notes updated with progress (badges, team, current objective, where yo
         if (a === "info") return showInfo();
         if (a === "train") { closeSheet(true); return train(); }
         if (a === "together") { closeSheet(true); return window.PocketGhosts && PocketGhosts.open(); }
+        if (a === "rivals") { closeSheet(true); return window.PocketRivals && PocketRivals.open(); }
         if (a === "advance") autoAdvance();
         if (a === "grind") grind();
         if (a === "run") autoRun(el.dataset.d);

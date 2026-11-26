@@ -657,8 +657,8 @@
     try { await ready(); } catch (e) { return info("Hero vs Rival", e.message); }
     if (!cfg.role) return openMenu();
     const st = statuses.get(foeId);
-    if (!st || !st.role) return info("Can't battle yet", `${esc(foeName)} hasn't picked Hero or Rival. They open <b>⚔ Rivals</b> and choose a side.`);
-    if (st.role === cfg.role) return info("Can't battle yet", `You're both the ${ROLES[cfg.role].label}. One of you switches sides in <b>⚔ Rivals</b>.`);
+    if (!st || !st.role) return info("Can't battle yet", `${esc(foeName)} hasn't picked Hero or Rival. They open <b>Auto → Hero vs Rival</b> and choose a side.`);
+    if (st.role === cfg.role) return info("Can't battle yet", `You're both the ${ROLES[cfg.role].label}. One of you switches sides in <b>Auto → Hero vs Rival</b>.`);
     const myRegion = journey() ? journey().region : null;
     if (myRegion != null && st.region != null && st.region !== myRegion) return info("Different regions", `You're in region ${myRegion + 1} and ${esc(foeName)} is in region ${st.region + 1}. ${st.region < myRegion ? "They need to beat their Champion and catch up." : "Beat your Champion to catch up."}`);
     const mine = badgeCount();
@@ -963,11 +963,6 @@
   window.PocketRivals = {
     init(c) {
       ctx = c; loadCfg(); css();
-      const bar = $(".pbar"), auto = $("#autoBtn");
-      if (bar && auto && ctx.getGame().system === "gba") {
-        const b = document.createElement("button"); b.className = "btn"; b.id = "rivalBtn"; b.onclick = openMenu;
-        bar.insertBefore(b, auto); updateBtn();
-      }
       if (G() && G().on) G().on(onMsg);
       setInterval(sendStatus, 3000);
       // Rival rules watcher (needs the game's memory; keeps trying until the game is past the title screen)
@@ -976,6 +971,8 @@
     },
     open: openMenu,
     challenge,
+    // one line for the Auto menu
+    label: () => cfg.role ? `You're the ${ROLES[cfg.role].icon} ${ROLES[cfg.role].label}${cfg.rules ? " · wild Pokémon give no EXP" : ""}` : "Pick Hero or Rival, then battle your friend",
     _engine: { onMsg: (m) => onMsg(m), grow: (r, n) => grow(r, n), evolutionFor: (m) => evolutionFor(m), myBattleParty: () => myBattleParty(), romTables, newBattle, resolve, gainsFor, calcStats: (...a) => calcStats(...a), levelForExp, stateHash, CHART, setTables: (t) => tables = t, applyGain: (g) => applyGain(g), setMem: (m) => mem = m, lockTick: () => lockTick(), setCfg: (c) => cfg = c, readParty: () => readParty() },
   };
 })();
