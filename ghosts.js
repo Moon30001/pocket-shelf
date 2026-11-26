@@ -1,10 +1,10 @@
 // Pocket Shelf — "Play together": see other players walking around your FireRed / LeafGreen / Emerald world.
 // Each phone reads its own player's map + position from memory and shares it; friends on the same map are drawn on top
-// of the game picture. Up to 4 players: the host relays everyone's updates. Works online (PeerJS) or offline (QR swap).
+// of the game picture. Up to 6 players: the host relays everyone's updates. Works online (PeerJS) or offline (QR swap).
 (function () {
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const COLORS = ["#ff6b6b", "#4dabf7", "#51cf66", "#fcc419"];
+  const COLORS = ["#ff6b6b", "#4dabf7", "#51cf66", "#fcc419", "#cc5de8", "#ff922b"];
   // Where the player's tile is on the 240×160 GBA screen (the camera keeps the player here)
   const PLAYER_TILE = { x: 112, y: 64 };
   const FAMILY_MAPS = (fam) => fam === "E" ? "E" : "FRLG";      // FireRed and LeafGreen share every map
@@ -17,7 +17,7 @@
     if (!mem || !mem.supported) return null;
     const L = mem.location();
     return { t: "pos", id: me.id, name: me.name, color: me.color, fam: FAMILY_MAPS(mem.profile.family), g: L.mapGroup, n: L.mapNum, x: L.x, y: L.y, f: L.facing,
-      field: mem.inOverworld(), gfx: myLook(), at: Date.now() };
+      field: mem.inOverworld(), gfx: myLook(), dur: Math.round(self.dur), at: Date.now() };
   }
 
   // ---------- real trainer sprites from the game's ROM ----------
@@ -88,7 +88,13 @@
     return kit;
   }
   // which sprite I show: the one picked in "Your look", or whatever my game is showing right now (walking, bike, surf…)
+  let lookCache = { at: 0, v: -1 };
   function myLook() {
+    if (performance.now() - lookCache.at < 1000) return lookCache.v;
+    lookCache = { at: performance.now(), v: readLook() };
+    return lookCache.v;
+  }
+  function readLook() {
     let pick = -1; try { const v = localStorage.getItem("ps_player_look"); if (v !== null && v !== "") pick = +v; } catch (e) {}
     if (pick >= 0) return pick;
     try { const rd = mem.reader, id = rd.u8(mem.ram.playerAvatar + 5); return rd.u8(mem.ram.objectEvents + id * 0x24 + 5); } catch (e) { return -1; }
@@ -116,6 +122,7 @@
       <div class="actions"><button class="btn ghost full" data-g="back">Done</button></div>`, (a) => {
       if (a === "back") return back();
       try { localStorage.setItem("ps_player_look", a === "look-game" ? "" : a.slice(5)); } catch (e) {}
+      lookCache.at = 0;
       lookPicker(back);
     });
   }
@@ -127,8 +134,18 @@
     if (role === "host" && msg.t !== "roster") broadcast(msg, link);       // host relays to everyone else
     hooks.forEach(h => { try { h(msg); } catch (e) { console.warn("Play together hook:", e); } });
     if (msg.t === "pos") {
-      const o = others.get(msg.id) || { id: msg.id, px: msg.x, py: msg.y, moveStart: 0 };
-      if (o.x !== undefined && (o.x !== msg.x || o.y !== msg.y)) { o.px = o.x; o.py = o.y; o.moveStart = performance.now(); }
+      let o = others.get(msg.id);
+      const sameMap = o && o.g === msg.g && o.n === msg.n && o.fam === msg.fam;
+      if (!o) o = { id: msg.id };
+      if (!sameMap || o.tx === undefined) { o.vx = msg.x; o.vy = msg.y; o.path = []; o.step = null; }          // new map: appear there
+      else if (o.tx !== msg.x || o.ty !== msg.y) {
+        // fill in every tile between the last known spot and this one, so they walk the route instead of jumping
+        let cx = o.tx, cy = o.ty;
+        while (cx !== msg.x && o.path.length < 12) { cx += Math.sign(msg.x - cx); o.path.push([cx, cy]); }
+        while (cy !== msg.y && o.path.length < 12) { cy += Math.sign(msg.y - cy); o.path.push([cx, cy]); }
+        if (o.path.length >= 12 || Math.abs(cx - msg.x) + Math.abs(cy - msg.y) > 0) { o.vx = msg.x; o.vy = msg.y; o.path = []; o.step = null; }  // too far: snap
+      }
+      o.tx = msg.x; o.ty = msg.y;
       Object.assign(o, msg, { seen: Date.now() });
       others.set(msg.id, o);
     }
@@ -155,7 +172,7 @@
     const id = "pkshelf-play-" + Array.from({ length: 6 }, () => AB[Math.floor(Math.random() * AB.length)]).join("");
     peer = new Peer(id); role = "host";
     await new Promise((res, rej) => { peer.on("open", res); peer.on("error", rej); });
-    peer.on("connection", (c) => { if (links.length >= 3) return c.close(); addLink(c); });
+    peer.on("connection", (c) => { if (links.length >= 5) return c.close(); addLink(c); });      // up to 6 players
     return "PSG1:" + id;
   }
   async function joinOnline(code) {
@@ -197,6 +214,35 @@
     px(4, 26, 3, 2, "#222"); px(9, 26, 3, 2, "#222");        // shoes
     g.globalAlpha = 1;
   }
+  // Walk a remote player along their queued tiles at the speed their own game is moving (walk / run / bike).
+  function advance(o, now) {
+    if (!o.step && o.path && o.path.length) {
+      const [x, y] = o.path.shift(), behind = o.path.length;
+      o.step = { fx: o.vx, fy: o.vy, x, y, start: now, dur: Math.max(50, (o.dur || 267) * (behind > 2 ? 0.5 : behind > 0 ? 0.8 : 1)) };
+      o.stepNo = (o.stepNo || 0) + 1;
+    }
+    if (!o.step) return false;
+    const st = o.step, t = Math.min(1, (now - st.start) / st.dur);
+    o.vx = st.fx + (st.x - st.fx) * t; o.vy = st.fy + (st.y - st.fy) * t;
+    if (t >= 1) { o.step = null; if (o.path.length) advance(o, now); }
+    return t < 0.75 || !!o.step;
+  }
+  // My own position between tiles: the game updates the tile as a step starts, then scrolls over the step's duration.
+  const self = { x: 0, y: 0, fx: 0, fy: 0, start: 0, dur: 267, last: 0, key: "" };
+  function myVisual(i, now) {
+    const key = i.fam + ":" + i.g + ":" + i.n;
+    if (key !== self.key || Math.abs(i.x - self.x) + Math.abs(i.y - self.y) > 1) { Object.assign(self, { key, x: i.x, y: i.y, fx: i.x, fy: i.y, start: 0 }); }
+    else if (i.x !== self.x || i.y !== self.y) {
+      const gap = now - self.last;
+      if (gap > 40 && gap < 400) self.dur = Math.max(50, Math.min(300, gap));     // walking ≈ 267 ms a tile, running ≈ 133, bike faster
+      self.last = now;
+      Object.assign(self, { fx: self.x + (self.vx - self.x || 0), fy: self.y + (self.vy - self.y || 0), x: i.x, y: i.y, start: now });
+      self.sendNow = true;
+    }
+    const t = self.start ? Math.min(1, (now - self.start) / self.dur) : 1;
+    self.vx = self.fx + (self.x - self.fx) * t; self.vy = self.fy + (self.y - self.fy) * t;
+    return { x: self.vx, y: self.vy };
+  }
   function draw() {
     drawRaf = requestAnimationFrame(draw);
     const c = overlay(), rect = pictureRect(), i = myInfo();
@@ -208,16 +254,17 @@
     const btn = $("#ghostInteract");
     let near = null;
     if (!i || !i.field) { if (btn) btn.hidden = true; return; }
+    if (self.sendNow) { self.sendNow = false; if (links.length) broadcast(i); }
+    if (i.f !== self.f) { self.f = i.f; if (links.length) broadcast(i); }        // turning on the spot
     const scale = c.width / 240, now = performance.now();
+    const mine = myVisual(i, now);                                          // my own position, sliding like the game's camera
     for (const o of others.values()) {
       if (Date.now() - o.seen > 8000) { others.delete(o.id); continue; }
       if (o.fam !== i.fam || o.g !== i.g || o.n !== i.n || !o.field) continue;
-      const t = Math.min(1, (now - (o.moveStart || 0)) / 260);              // walk smoothly between tiles
-      const gx = (o.px ?? o.x) + ((o.x - (o.px ?? o.x)) * t), gy = (o.py ?? o.y) + ((o.y - (o.py ?? o.y)) * t);
-      const sx = (PLAYER_TILE.x + (gx - i.x) * 16 + 8) * scale, sy = (PLAYER_TILE.y + (gy - i.y) * 16 - 16) * scale;
+      const walking = advance(o, now);
+      const sx = (PLAYER_TILE.x + (o.vx - mine.x) * 16 + 8) * scale, sy = (PLAYER_TILE.y + (o.vy - mine.y) * 16 - 16) * scale;
       if (sx < -40 * scale || sx > 280 * scale || sy < -40 * scale || sy > 200 * scale) continue;
-      const walking = t < 1 && (o.px !== o.x || o.py !== o.y);
-      if (!drawSprite(g, sx, sy, scale, o.gfx, o.f, walking && t < 0.6, (o.x + o.y) & 1)) drawTrainer(g, sx, sy, scale, o.color, o.f);
+      if (!drawSprite(g, sx, sy, scale, o.gfx, o.f, walking, o.stepNo || 0)) drawTrainer(g, sx, sy, scale, o.color, o.f);
       g.font = `${Math.round(7 * scale)}px system-ui, sans-serif`; g.textAlign = "center";
       g.fillStyle = "rgba(0,0,0,.6)"; const tw = g.measureText(o.name).width + 6 * scale;
       g.fillRect(sx - tw / 2, sy - 9 * scale, tw, 9 * scale);
@@ -277,7 +324,7 @@
     if (role && !n && role === "guest") b.textContent = "👥 reconnecting…";
   }
   function start() {
-    if (!sendTimer) sendTimer = setInterval(() => { const i = myInfo(); if (i && links.length) broadcast(i); }, 125);
+    if (!sendTimer) sendTimer = setInterval(() => { const i = myInfo(); if (i && links.length) broadcast(i); }, 400);
     if (!drawRaf) draw();
     updateStatus();
   }
@@ -297,24 +344,26 @@
     if (!mem.profile.rom) mem.learnOverworld();
     if (!me) {
       let name = ""; try { name = localStorage.getItem("ps_player_name") || ""; } catch (e) {}
-      me = { id: Math.random().toString(36).slice(2, 10), name: name || "Player", color: COLORS[Math.floor(Math.random() * 4)] };
+      me = { id: Math.random().toString(36).slice(2, 10), name: name || "Player", color: COLORS[Math.floor(Math.random() * COLORS.length)] };
     }
     if (role) {
       sheet(`<h3>Play together</h3><div class="sub">${others.size + 1} player(s) connected. Friends on the same map show up walking around.</div>
-        <div class="actions"><button class="btn ghost full" data-g="look">👤 Your look</button><button class="btn danger full" data-g="leave">Leave</button><button class="btn ghost full" data-g="close">Close</button></div>`, (a) => { if (a === "look") return lookPicker(openMenu); if (a === "leave") stop(); closeSheet(); });
+        <div class="actions"><button class="btn ghost full" data-g="look">👤 Your look</button><button class="btn ghost full" data-g="mute">${muteLabel()}</button><button class="btn danger full" data-g="leave">Leave</button><button class="btn ghost full" data-g="close">Close</button></div>`, (a) => { if (a === "mute") { toggleMute(); return openMenu(); } if (a === "look") return lookPicker(openMenu); if (a === "leave") stop(); closeSheet(); });
       return;
     }
     const online = navigator.onLine;
     sheet(`<h3>Play together <small style="color:var(--accent);font-size:12px">beta</small></h3>
-      <div class="sub">See up to 3 friends walking around your world and trade when you meet. Everyone needs FireRed/LeafGreen together, or Emerald together.</div>
+      <div class="sub">See up to 5 friends walking around your world and trade when you meet. Everyone needs FireRed/LeafGreen together, or Emerald together.</div>
       <label class="k" style="display:block;margin:6px 0">Your name</label><input type="text" id="ghostName" maxlength="10" value="${esc(me.name)}">
       <div class="actions" style="margin-top:14px">
         <button class="btn primary" data-g="host">Host</button><button class="btn ghost" data-g="join">Join</button>
         <button class="btn ghost full" data-g="look">👤 Your look</button>
+        <button class="btn ghost full" data-g="mute">${muteLabel()}</button>
         <button class="btn ghost full" data-g="close">Cancel</button></div>
       <p class="d" style="margin-top:10px">${online ? "Online: friends can be anywhere." : "No internet: everyone joins the same Wi-Fi or hotspot and you'll scan each other's codes."}</p>`,
       async (a) => {
         if (a === "close") return closeSheet();
+        if (a === "mute") { toggleMute(); return openMenu(); }
         if (a === "look") { me.name = ($("#ghostName").value.trim() || "Player").slice(0, 10); try { localStorage.setItem("ps_player_name", me.name); } catch (e) {} return lookPicker(openMenu); }
         me.name = ($("#ghostName").value.trim() || "Player").slice(0, 10); try { localStorage.setItem("ps_player_name", me.name); } catch (e) {}
         try {
@@ -323,8 +372,8 @@
               const code = await hostOnline();
               start();
               const room = code.slice(-6).toUpperCase();
-              sheet(`<h3>Hosting</h3><div class="sub">Friends tap <b>Auto → Play together → Join</b> and scan this, or type the room code (handy on a PC).</div><div class="qr" style="width:min(240px,70vw);margin:10px auto;background:#fff;border-radius:12px;padding:8px">${PocketOffline.qrSvg(code)}</div>
-                <div style="text-align:center;font:800 28px/1.2 ui-monospace,monospace;letter-spacing:.25em;margin:4px 0 2px">${room}</div><div class="sub" style="text-align:center">Room code</div>
+              sheet(`<h3>Hosting</h3><div class="sub">Friends tap <b>Auto → Play together → Join</b> and type this code. Up to 5 can join.</div>
+                <div style="text-align:center;font:800 40px/1.2 ui-monospace,monospace;letter-spacing:.25em;margin:14px 0 2px">${room}</div><div class="sub" style="text-align:center">Room code</div>
                 <div class="actions"><button class="btn primary full" data-g="close">Start playing</button></div>`, () => closeSheet());
             } else {
               offline = await PocketOffline.host(); role = "host"; addLink(offline.conn); start();
@@ -350,10 +399,10 @@
   function askJoinCode() {
     return new Promise((resolve, reject) => {
       const typeIt = () => {
-        sheet(`<h3>Type the room code</h3><div class="sub">It's the 6 letters under the host's QR code.</div>
+        sheet(`<h3>Join</h3><div class="sub">Type the 6-letter room code from the host's screen.</div>
           <input type="text" id="ghostRoom" maxlength="6" autocomplete="off" autocapitalize="characters" style="width:100%;font:800 24px ui-monospace,monospace;letter-spacing:.25em;text-align:center;text-transform:uppercase">
-          <div class="actions"><button class="btn ghost" data-g="back">Back</button><button class="btn primary" data-g="go">Join</button></div>`, (b) => {
-          if (b === "back") return choose();
+          <div class="actions"><button class="btn ghost" data-g="back">Cancel</button><button class="btn primary" data-g="go">Join</button></div>`, (b) => {
+          if (b === "back") { closeSheet(); return reject(new Error("cancelled")); }
           const room = ($("#ghostRoom").value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
           if (room.length !== 6) return;
           closeSheet(); resolve("PSG1:pkshelf-play-" + room);
@@ -367,9 +416,17 @@
         if (b === "type") return typeIt();
         if (b === "scan") { closeSheet(); PocketOffline.scan("Scan the code on the host's screen").then(resolve, reject); }
       });
-      if (!navigator.onLine) return PocketOffline.scan("Scan the code on the host's phone").then(resolve, reject);   // offline codes are too long to type
-      choose();
+      if (!navigator.onLine) return PocketOffline.scan("Scan the code on the host's phone").then(resolve, reject);   // no internet: phones swap long codes, only a QR can carry them
+      typeIt();
     });
+  }
+  // Each device only ever plays its own game's sound. Two devices side by side play the same music slightly out of step,
+  // which sounds like a messy echo, so one of them can be muted here.
+  const muted = () => !!(window.EJS_emulator && EJS_emulator.muted);
+  const muteLabel = () => muted() ? "🔊 Turn this device's sound on" : "🔇 Mute this device";
+  function toggleMute() {
+    const e = window.EJS_emulator; if (!e) return;
+    try { if (muted()) { e.muted = false; e.setVolume(e.volume || 0.5); } else { e.muted = true; e.setVolume(0); } } catch (err) {}
   }
   function alertSheet(msg) { sheet(`<h3>Play together</h3><div class="sub">${esc(msg)}</div><div class="actions"><button class="btn ghost full" data-g="close">OK</button></div>`, () => closeSheet()); }
 
@@ -389,5 +446,6 @@
     me: () => me,
     others: () => others,
     connected: () => !!role,
+    isHost: () => role === "host",
   };
 })();

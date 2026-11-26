@@ -8,7 +8,14 @@
 (function () {
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const ROLES = { hero: { label: "Hero", icon: "🦸" }, rival: { label: "Rival", icon: "😈" } };
+  // Teams: Heroes battle Rivals (several players can be on each team). Co-op players just play together, no battles.
+  const ROLES = { hero: { label: "Hero", icon: "🦸", plural: "Heroes" }, rival: { label: "Rival", icon: "😈", plural: "Rivals" }, coop: { label: "Co-op", icon: "🤝", plural: "Co-op players" } };
+  const canFight = (a, b) => (a === "hero" && b === "rival") || (a === "rival" && b === "hero");
+  function teamText(mine, theirs, name) {
+    if (!theirs) return `${esc(name)} hasn't picked a side yet. They open <b>Auto → Hero vs Rival</b> and choose one.`;
+    if (mine === "coop" || theirs === "coop") return `${mine === "coop" ? "You're" : esc(name) + " is"} playing Co-op, so there's no battling. To battle, pick Hero or Rival in <b>Auto → Hero vs Rival</b>.`;
+    return `You're both ${ROLES[mine].plural}, so you're teammates. Challenge someone on the other team.`;
+  }
   const ROM = 0x08000000;
   const TYPE_NAMES = ["Normal", "Fighting", "Flying", "Poison", "Ground", "Rock", "Bug", "Ghost", "Steel", "???", "Fire", "Water", "Grass", "Electric", "Psychic", "Ice", "Dragon", "Dark"];
   const BADGE_FLAG = { FRLG: { flags: 0x0EE0, first: 0x820 }, E: { flags: 0x1270, first: 0x867 } };
@@ -626,12 +633,10 @@
   function onMsg(msg) {
     if (msg.t === "rv-status") {
       statuses.set(msg.id, { ...msg, seen: Date.now() });
-      if (cfg.role && msg.role === cfg.role && msg.id < myId() && !(battle)) {        // two of the same side: the earlier id keeps it
-        cfg.role = cfg.role === "hero" ? "rival" : "hero"; saveCfg();
-        toast(`${msg.name} is already the ${ROLES[msg.role].label}, so you're the ${ROLES[cfg.role].label}.`, 6000);
-        sendStatus();
-      }
+      if (isHost()) shareStarters();
       return;
+    }
+    if (msg.t === "rv-starters") { starterIdx = msg.on && msg.map && msg.map[myId()] != null ? msg.map[myId()] : null; starterOn = !!msg.on; return;
     }
     if (!msg.t || !msg.t.startsWith("rv-") || msg.to !== myId()) return;
     if (msg.t === "rv-ch") return challenged(msg);
@@ -657,8 +662,7 @@
     try { await ready(); } catch (e) { return info("Hero vs Rival", e.message); }
     if (!cfg.role) return openMenu();
     const st = statuses.get(foeId);
-    if (!st || !st.role) return info("Can't battle yet", `${esc(foeName)} hasn't picked Hero or Rival. They open <b>Auto → Hero vs Rival</b> and choose a side.`);
-    if (st.role === cfg.role) return info("Can't battle yet", `You're both the ${ROLES[cfg.role].label}. One of you switches sides in <b>Auto → Hero vs Rival</b>.`);
+    if (!st || !st.role || !canFight(cfg.role, st.role)) return info("Can't battle", teamText(cfg.role, st && st.role, foeName));
     const myRegion = journey() ? journey().region : null;
     if (myRegion != null && st.region != null && st.region !== myRegion) return info("Different regions", `You're in region ${myRegion + 1} and ${esc(foeName)} is in region ${st.region + 1}. ${st.region < myRegion ? "They need to beat their Champion and catch up." : "Beat your Champion to catch up."}`);
     const mine = badgeCount();
@@ -682,7 +686,7 @@
     try { await ready(); } catch (e) { return no("Their game isn't supported."); }
     if (battle) return no("They're already battling.");
     if (!cfg.role) return no("They haven't picked Hero or Rival yet.");
-    if (msg.role === cfg.role) return no(`You're both the ${ROLES[cfg.role].label}.`);
+    if (!canFight(cfg.role, msg.role)) return no(cfg.role === "coop" ? "They're playing Co-op." : "You're on the same team.");
     const myRegion = journey() ? journey().region : null;
     if (myRegion != null && msg.region != null && msg.region !== myRegion) return no(`You're in different regions of your journey (you: ${msg.region + 1}, them: ${myRegion + 1}).`);
     const mine = badgeCount();
@@ -902,6 +906,58 @@
     await learnMoves(r.pid, target, m.level - 1, m.level, notes);    // moves the new form learns at this level
   }
 
+  // ---------------- 🎲 random starters (host decides, everyone gets a different one) ----------------
+  // Starter trios by National Dex number: grass, fire, water. The trio is the one your game handed you.
+  const TRIOS = [[1, 4, 7], [152, 155, 158], [252, 255, 258]];
+  let starterOn = false, starterIdx = null, starterOrder = [], starterPerm = null, lastCount = null, swapTimer = null;
+  try { starterOn = localStorage.getItem("ps_rand_starters") === "1"; } catch (e) {}
+  const isHost = () => !!(G() && G().isHost && G().isHost());
+  function starterName() {
+    let nat = null;
+    try { const m = mem && readParty()[0], n = m && I().toNational(m.internal), trio = TRIOS.find(t => t.includes(n)); if (trio) nat = trio[starterIdx]; } catch (e) {}
+    return nat ? (PkData.species[nat] || {}).name : ["the grass starter", "the fire starter", "the water starter"][starterIdx];
+  }
+  function shareStarters() {
+    if (!isHost() || !G().connected()) return;
+    if (!starterPerm) { starterPerm = [0, 1, 2]; for (let i = 2; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [starterPerm[i], starterPerm[j]] = [starterPerm[j], starterPerm[i]]; } }
+    const ids = [myId(), ...[...statuses.keys()]].filter(Boolean);
+    for (const id of ids) if (!starterOrder.includes(id)) starterOrder.push(id);
+    const map = {}; starterOrder.forEach((id, k) => map[id] = starterPerm[k % 3]);
+    starterIdx = starterOn ? map[myId()] : null;
+    send({ t: "rv-starters", on: starterOn, map });
+  }
+  // Watch the party: the moment it goes from 0 to 1 Pokémon (you just got your starter), swap it for your assigned one.
+  function starterTick() {
+    if (!mem || !tables || battle) return;
+    // only count changes that happen while walking around (getting a starter in a lab), never loading a save from the title screen
+    if (!mem.inOverworld()) { lastCount = null; return; }
+    let n; try { n = mem.partyCount(); } catch (e) { return; }
+    if (lastCount === 0 && n === 1 && starterOn && starterIdx != null) {
+      clearTimeout(swapTimer);
+      swapTimer = setTimeout(() => { try { swapStarter(); } catch (e) { console.warn("Starter swap failed:", e); } }, 1200);   // let the game finish writing it
+    }
+    lastCount = n;
+  }
+  function swapStarter() {
+    const m = readParty()[0]; if (!m || m.level > 10) return;
+    const nat = I().toNational(m.internal), trio = TRIOS.find(t => t.includes(nat));
+    if (!trio || trio[starterIdx] === nat) return;
+    const want = trio[starterIdx], internal = I().toInternal(want), n = I().toNeutral(m.dec);
+    w16(m.dec, 0x20, internal);
+    if (!n.isNicknamed) { const nm = (PkData.species[want] || {}).name; if (nm) I().setString(m.dec, 0x08, 10, nm.toUpperCase(), m.dec[0x12]); }
+    // the moves it would know at this level
+    const known = [];
+    for (const e of tables.learnset(internal)) if (e.level <= m.level) { const i = known.indexOf(e.move); if (i >= 0) known.splice(i, 1); known.push(e.move); }
+    const moves = known.slice(-4);
+    for (let k = 0; k < 4; k++) { w16(m.dec, 0x2C + k * 2, moves[k] || 0); m.dec[0x34 + k] = moves[k] ? tables.move(moves[k]).pp : 0; }
+    m.dec[0x28] = 0;
+    const stats = calcStats(internal, m.level, m.ivs, m.evs, m.pid), raw = packRaw(m);
+    w16(raw, 0x56, stats[0]); stats.forEach((v, i) => w16(raw, 0x58 + i * 2, v));
+    writeSlot(m.slot, raw);
+    markDex(want, nat);
+    toast(`🎲 Random starters: you got ${(PkData.species[want] || {}).name}!`, 6000);
+  }
+
   // ---------------- menu ----------------
   function sheet(html, onAction, modal) {
     let s = $("#rivalSheet");
@@ -920,25 +976,26 @@
     const others = [...statuses.values()].filter(s => Date.now() - s.seen < 10000);
     const together = G() && G().connected();
     sheet(`<h3>⚔ Hero vs Rival</h3>
-      <div class="sub">One of you is the Hero, the other the Rival. You go on the same journey and can battle whenever you meet.</div>
-      <div class="actions">
+      <div class="sub">Pick a team. Heroes battle Rivals whenever they meet, and several players can be on each team. Co-op is just playing together, with no battles.</div>
+      <div class="actions" style="grid-template-columns:1fr 1fr 1fr">
         ${Object.entries(ROLES).map(([k, r]) => `<button class="btn ${cfg.role === k ? "primary" : "ghost"}" data-r="role-${k}">${r.icon} ${r.label}</button>`).join("")}
       </div>
+      ${together ? `<label class="row" style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input type="checkbox" id="rvStarters" ${starterOn ? "checked" : ""} ${isHost() ? "" : "disabled"} style="margin-top:3px">
+        <span><span class="k">🎲 Random starters</span><br><span class="d">${isHost() ? "Everyone gets a different starter when they receive one (for example one Totodile, one Cyndaquil, one Chikorita). Turn this on before anyone gets their starter." : "The host decides."}${starterIdx != null ? ` <b>Yours: ${esc(starterName())}</b>` : ""}</span></span></label>` : ""}
       ${journey() ? `<div class="row" style="margin-top:12px"><span class="k">Journey</span> <span class="d">Region ${journey().region + 1} of ${journey().total}</span></div>` : ""}
       <div class="row" style="${journey() ? "" : "margin-top:12px"}"><span class="k">Your badges</span> <span class="d">${badgeCount()} / 8</span></div>
       ${others.map(s => `<div class="row"><span class="k">${ROLES[s.role]?.icon || ""} ${esc(s.name)}</span> <span class="d">${ROLES[s.role]?.label || "?"} · ${s.region != null ? `region ${s.region + 1} · ` : ""}${s.badges} badge${s.badges === 1 ? "" : "s"}</span></div>`).join("")}
       <label class="row" style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input type="checkbox" id="rvRules" ${cfg.rules ? "checked" : ""} style="margin-top:3px">
         <span><span class="k">Rival rules</span><br><span class="d">Wild Pokémon give no EXP or EVs. Your team only grows from trainer battles and from battling each other. Stays on whenever you play this game.</span></span></label>
-      <p class="d" style="margin-top:10px">${together ? "" : "<b>To meet up:</b> open <b>Auto → Play together</b> and connect. "}To battle, walk up to the other player, face them and tap <b>Interact → ⚔ Battle</b>. You can only battle when you both have the same number of badges.</p>
+      <p class="d" style="margin-top:10px">${together ? "" : "<b>To meet up:</b> open <b>Auto → Play together</b> and connect. "}To battle, walk up to a player on the other team, face them and tap <b>Interact → ⚔ Battle</b>. You can only battle when you both have the same number of badges.</p>
       <div class="actions"><button class="btn ghost full" data-r="close">Done</button></div>`, (a) => {
       if (a.startsWith("role-")) {
-        const want = a.slice(5), taken = others.find(s => s.role === want);
-        if (taken) { info("Side taken", `${esc(taken.name)} is already the ${ROLES[want].label}. Pick the other side.`); return; }
-        cfg.role = want; cfg.rules = true; saveCfg(); sendStatus(); return openMenu();
+        cfg.role = a.slice(5); cfg.rules = cfg.role !== "coop"; saveCfg(); sendStatus(); return openMenu();
       }
       if (a === "close") { cfg.rules = !!($("#rvRules") || {}).checked; saveCfg(); closeSheet(); }
     });
     $("#rvRules").onchange = (e) => { cfg.rules = e.target.checked; saveCfg(); };
+    if ($("#rvStarters")) $("#rvStarters").onchange = (e) => { starterOn = e.target.checked; try { localStorage.setItem("ps_rand_starters", starterOn ? "1" : ""); } catch (er) {} shareStarters(); openMenu(); };
   }
   function updateBtn() {
     const b = $("#rivalBtn"); if (!b) return;
@@ -966,13 +1023,17 @@
       if (G() && G().on) G().on(onMsg);
       setInterval(sendStatus, 3000);
       // Rival rules watcher (needs the game's memory; keeps trying until the game is past the title screen)
-      const boot = async () => { if (!cfg.rules) return; try { await ready(); } catch (e) { return; } if (!lockTimer) lockTimer = setInterval(lockTick, 300); };
+      const boot = async () => {
+        if (!cfg.rules && !(G() && G().connected())) return;
+        try { await ready(); } catch (e) { return; }
+        if (!lockTimer) lockTimer = setInterval(() => { if (cfg.rules) lockTick(); starterTick(); if (isHost() && Date.now() % 5000 < 300) shareStarters(); }, 300);
+      };
       setInterval(boot, 5000); boot();
     },
     open: openMenu,
     challenge,
     // one line for the Auto menu
-    label: () => cfg.role ? `You're the ${ROLES[cfg.role].icon} ${ROLES[cfg.role].label}${cfg.rules ? " · wild Pokémon give no EXP" : ""}` : "Pick Hero or Rival, then battle your friend",
+    label: () => cfg.role ? `${cfg.role === "coop" ? "You're playing 🤝 Co-op" : `You're a ${ROLES[cfg.role].icon} ${ROLES[cfg.role].label}`}${cfg.rules ? " · wild Pokémon give no EXP" : ""}` : "Pick a team: Hero, Rival or Co-op",
     _engine: { onMsg: (m) => onMsg(m), grow: (r, n) => grow(r, n), evolutionFor: (m) => evolutionFor(m), myBattleParty: () => myBattleParty(), romTables, newBattle, resolve, gainsFor, calcStats: (...a) => calcStats(...a), levelForExp, stateHash, CHART, setTables: (t) => tables = t, applyGain: (g) => applyGain(g), setMem: (m) => mem = m, lockTick: () => lockTick(), setCfg: (c) => cfg = c, readParty: () => readParty() },
   };
 })();
