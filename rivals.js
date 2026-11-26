@@ -1,6 +1,6 @@
 // Pocket Shelf — "Hero vs Rival": two players on the same journey (FireRed / LeafGreen / Emerald and hacks built on them,
 // e.g. Silver Rival). One player is the Hero, the other the Rival. Rules:
-//   • Wild Pokémon give no EXP or EVs (Rival rules). Pokémon only grow from trainer battles and from battling each other.
+//   • Every battle gives EXP: wild Pokémon, trainers and battling each other. (The old no-wild-EXP rule is kept below but switched off.)
 //   • You can only challenge the other player when you both have the same number of gym badges.
 // Players meet through "Play together" (ghosts.js), walk up to each other and pick Battle. The versus battle runs in
 // Pocket Shelf (the games are paused), both phones simulate it from the same seed, and each player's winnings
@@ -25,7 +25,7 @@
   // ---------------- settings (per game) ----------------
   const journey = () => window.PocketJourney && PocketJourney.status(ctx.getGame().id);   // { region, current, total } or null
   const cfgKey = () => journey() ? "ps_rivals_journey" : "ps_rivals_" + ctx.getGame().id;  // one side for the whole journey
-  function loadCfg() { try { cfg = Object.assign({ role: null, rules: false }, JSON.parse(localStorage.getItem(cfgKey()) || "{}")); } catch (e) {} }
+  function loadCfg() { try { cfg = Object.assign({ role: null, rules: false }, JSON.parse(localStorage.getItem(cfgKey()) || "{}")); } catch (e) {} cfg.rules = false; }   // every battle gives EXP (the no-wild-EXP rule was retired)
   function saveCfg() { try { localStorage.setItem(cfgKey(), JSON.stringify(cfg)); } catch (e) {} updateBtn(); }
   const toast = (t, ms = 3500) => { try { EJS_emulator.displayMessage(t, ms); } catch (e) {} };
   const gm = () => window.EJS_emulator && EJS_emulator.gameManager;
@@ -985,16 +985,13 @@
       ${journey() ? `<div class="row" style="margin-top:12px"><span class="k">Journey</span> <span class="d">Region ${journey().region + 1} of ${journey().total}</span></div>` : ""}
       <div class="row" style="${journey() ? "" : "margin-top:12px"}"><span class="k">Your badges</span> <span class="d">${badgeCount()} / 8</span></div>
       ${others.map(s => `<div class="row"><span class="k">${ROLES[s.role]?.icon || ""} ${esc(s.name)}</span> <span class="d">${ROLES[s.role]?.label || "?"} · ${s.region != null ? `region ${s.region + 1} · ` : ""}${s.badges} badge${s.badges === 1 ? "" : "s"}</span></div>`).join("")}
-      <label class="row" style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input type="checkbox" id="rvRules" ${cfg.rules ? "checked" : ""} style="margin-top:3px">
-        <span><span class="k">Rival rules</span><br><span class="d">Wild Pokémon give no EXP or EVs. Your team only grows from trainer battles and from battling each other. Stays on whenever you play this game.</span></span></label>
       <p class="d" style="margin-top:10px">${together ? "" : "<b>To meet up:</b> open <b>Auto → Play together</b> and connect. "}To battle, walk up to a player on the other team, face them and tap <b>Interact → ⚔ Battle</b>. You can only battle when you both have the same number of badges.</p>
       <div class="actions"><button class="btn ghost full" data-r="close">Done</button></div>`, (a) => {
       if (a.startsWith("role-")) {
-        cfg.role = a.slice(5); cfg.rules = cfg.role !== "coop"; saveCfg(); sendStatus(); return openMenu();
+        cfg.role = a.slice(5); saveCfg(); sendStatus(); return openMenu();
       }
-      if (a === "close") { cfg.rules = !!($("#rvRules") || {}).checked; saveCfg(); closeSheet(); }
+      if (a === "close") closeSheet();
     });
-    $("#rvRules").onchange = (e) => { cfg.rules = e.target.checked; saveCfg(); };
     if ($("#rvStarters")) $("#rvStarters").onchange = (e) => { starterOn = e.target.checked; try { localStorage.setItem("ps_rand_starters", starterOn ? "1" : ""); } catch (er) {} shareStarters(); openMenu(); };
   }
   function updateBtn() {

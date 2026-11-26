@@ -50,7 +50,7 @@
     const pals = {}; for (let i = 0; i < pal.n; i++) pals[u16(pal.o + i * 8 + 4)] = u32(pal.o + i * 8) - ROM;
     const cache = new Map();
     kit = {
-      count: table.n,
+      count: table.n, tableOff: table.o,
       gfx(id) {
         if (id < 0 || id >= table.n) return null;
         const g = u32(table.o + id * 4) - ROM, p = pals[u16(g + 2)];
@@ -77,13 +77,25 @@
               }
               cx.putImageData(im, 0, 0);
               if (!any) c = null;
+              else { let top = s.h, bottom = 0; for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) if (im.data[(y * s.w + x) * 4 + 3]) { top = Math.min(top, y); bottom = Math.max(bottom, y); } c.top = top; c.bottom = bottom; }
             }
           }
         } catch (e) { c = null; }
         cache.set(key, c); return c;
       },
-      // people only (16×32 standing sprites), for the look picker
-      people() { const out = []; for (let i = 0; i < table.n; i++) { const s = kit.gfx(i); if (s && s.w === 16 && s.h === 32 && kit.frame(i, 0)) out.push(i); } return out; },
+      // walking trainers only, for the look picker: 16×32, all 9 walking frames present, feet at the bottom
+      // (leaves out swimmers in the water, Pokémon, shadows and object sheets)
+      people() {
+        if (kit._people) return kit._people;
+        const out = [];
+        for (let i = 0; i < table.n; i++) {
+          const s = kit.gfx(i); if (!s || s.w !== 16 || s.h !== 32) continue;
+          const frames = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(f => kit.frame(i, f));
+          if (frames.some(f => !f || f.bottom < 30)) continue;
+          out.push(i);
+        }
+        return (kit._people = out);
+      },
     };
     return kit;
   }
@@ -96,7 +108,7 @@
   }
   function readLook() {
     let pick = -1; try { const v = localStorage.getItem("ps_player_look"); if (v !== null && v !== "") pick = +v; } catch (e) {}
-    if (pick >= 0) return pick;
+    if (pick >= 0) { const k = spriteKit(); if (!k || k.people().includes(pick)) return pick; }
     try { const rd = mem.reader, id = rd.u8(mem.ram.playerAvatar + 5); return rd.u8(mem.ram.objectEvents + id * 0x24 + 5); } catch (e) { return -1; }
   }
   // Gen 3 frames: 0 down, 1 up, 2 left (right = left mirrored), walking 3–4 down, 5–6 up, 7–8 left
@@ -109,22 +121,73 @@
     g.save(); g.imageSmoothingEnabled = false;
     if (facing === 4) { g.translate(x + w, y); g.scale(-1, 1); g.drawImage(c, 0, 0, w, h); } else g.drawImage(c, x, y, w, h);
     g.restore();
-    return true;
+    return y + (c.top || 0) * scale;                                     // where the head is, so the name sits right above it
   }
   function lookPicker(back) {
     const k = spriteKit();
     if (!k) { sheet(`<h3>Your look</h3><div class="sub">Couldn't find this game's trainer sprites.</div><div class="actions"><button class="btn ghost full" data-g="back">Back</button></div>`, () => back()); return; }
     let cur = ""; try { cur = localStorage.getItem("ps_player_look") || ""; } catch (e) {}
     const tile = (i) => { const c = k.frame(i, 0); return `<button data-g="look-${i}" style="all:unset;cursor:pointer;display:grid;place-items:center;padding:4px;border-radius:10px;background:${String(i) === cur ? "#3a3010" : "var(--panel-2)"};outline:${String(i) === cur ? "2px solid var(--accent)" : "none"}"><img src="${c.toDataURL()}" style="width:32px;height:64px;image-rendering:pixelated"></button>`; };
-    sheet(`<h3>Your look</h3><div class="sub">How friends see you walking around. Picked from this game's own trainers.</div>
+    sheet(`<h3>Your look</h3><div class="sub">How friends see you, and how you look in your own game while you're connected. Your game switches to it after you go through a door or into a new area, and goes back when you leave Play together.</div>
       <button class="btn ${cur === "" ? "primary" : "ghost"} full" data-g="look-game" style="width:100%;margin-bottom:10px">Same as in my game</button>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(48px,1fr));gap:6px;max-height:50vh;overflow:auto">${k.people().map(tile).join("")}</div>
       <div class="actions"><button class="btn ghost full" data-g="back">Done</button></div>`, (a) => {
       if (a === "back") return back();
       try { localStorage.setItem("ps_player_look", a === "look-game" ? "" : a.slice(5)); } catch (e) {}
       lookCache.at = 0;
+      if (role) applySelfLook();
       lookPicker(back);
     });
+  }
+
+  // ---------- show my picked look as MY character too (only while connected) ----------
+  // The game reads its sprite table from the ROM every time it creates the player sprite. While connected, the player's
+  // walking sprite entry points at a copy of it that uses the picked trainer's frames and colours. Leaving restores it.
+  // Takes effect the next time the game builds the player sprite (going through a door, a new area, getting off a bike).
+  const selfLook = { heapRoms: null, playerGfx: null, orig: null, applied: -1, free: null };
+  function heapRomCopies() {
+    if (selfLook.heapRoms) return selfLook.heapRoms;
+    const H = window.EJS_emulator.gameManager.Module.HEAPU8, rom = mem.rom, out = [];
+    const probe = [0xA0, 0x200, 0x1000, 0x100000, rom.length - 0x1000];      // the emulator keeps its own copy of the ROM in memory
+    for (let i = 0; i + rom.length <= H.length; i += 4) {
+      if (H[i + 0xA0] !== rom[0xA0] || H[i + 0xAC] !== rom[0xAC] || H[i + 4] !== rom[4]) continue;
+      if (probe.every(o => { for (let k = 0; k < 64; k++) if (H[i + o + k] !== rom[o + k]) return false; return true; })) out.push(i);
+    }
+    return (selfLook.heapRoms = out);
+  }
+  function romW32(base, off, v) { const H = window.EJS_emulator.gameManager.Module.HEAPU8; H[base + off] = v & 255; H[base + off + 1] = (v >>> 8) & 255; H[base + off + 2] = (v >>> 16) & 255; H[base + off + 3] = v >>> 24; }
+  function applySelfLook() {
+    try {
+      const k = spriteKit(); if (!k) return;
+      const pick = readLook(), rom = mem.rom, ROM = 0x08000000;
+      const u16 = (o) => rom[o] | (rom[o + 1] << 8), u32 = (o) => (rom[o] | (rom[o + 1] << 8) | (rom[o + 2] << 16) | (rom[o + 3] << 24)) >>> 0;
+      // which sprite is "me on foot": remember it the first time we see it (player-only palette slot, 16×32)
+      if (selfLook.playerGfx == null) {
+        const rd = mem.reader, onFoot = rd.u8(mem.ram.playerAvatar) & 1, id = rd.u8(mem.ram.objectEvents + rd.u8(mem.ram.playerAvatar + 5) * 0x24 + 5), s = k.gfx(id);
+        if (onFoot && s && s.w === 16 && s.h === 32 && (rom[s.g + 12] & 15) === 0) selfLook.playerGfx = id; else return;
+      }
+      const want = pick >= 0 && k.people().includes(pick) ? pick : -1;
+      if (want === selfLook.applied) return;
+      const copies = heapRomCopies(); if (!copies.length) return;
+      const tableSlot = k.tableOff + selfLook.playerGfx * 4;
+      if (selfLook.orig == null) selfLook.orig = u32(tableSlot);
+      if (want < 0) { copies.forEach(b => romW32(b, tableSlot, selfLook.orig)); selfLook.applied = -1; return; }
+      // free space for the copy: the biggest run of unused (0xFF) bytes in the ROM
+      if (selfLook.free == null) { let best = 0, bl = 0; for (let i = 0; i < rom.length;) { if (rom[i] !== 0xFF) { i++; continue; } let j = i; while (j < rom.length && rom[j] === 0xFF) j++; if (j - i > bl) { bl = j - i; best = i; } i = j; } if (bl < 1024) return; selfLook.free = (best + 512) & ~3; }
+      const F = selfLook.free, mineInfo = selfLook.orig - ROM, npc = k.gfx(want), H = window.EJS_emulator.gameManager.Module.HEAPU8;
+      for (const b of copies) {
+        for (let i = 0; i < 36; i++) H[b + F + i] = rom[mineInfo + i];                 // my sprite's settings (size, animations)…
+        H[b + F + 2] = rom[npc.g + 2]; H[b + F + 3] = rom[npc.g + 3];                  // …with their colours
+        romW32(b, F + 28, ROM + F + 40);                                                 // …and their frames
+        for (let f = 0; f < 32; f++) { const src = npc.images + (f % 9) * 8; for (let i = 0; i < 8; i++) H[b + F + 40 + f * 8 + i] = rom[src + i]; }
+        romW32(b, tableSlot, ROM + F);
+      }
+      selfLook.applied = want;
+    } catch (e) { console.warn("Couldn't change my character:", e); }
+  }
+  function restoreSelfLook() {
+    try { if (selfLook.orig != null && selfLook.applied >= 0) { const k = spriteKit(); heapRomCopies().forEach(b => romW32(b, k.tableOff + selfLook.playerGfx * 4, selfLook.orig)); } } catch (e) {}
+    selfLook.applied = -1;
   }
 
   // ---------- networking ----------
@@ -264,13 +327,14 @@
       const walking = advance(o, now);
       const sx = (PLAYER_TILE.x + (o.vx - mine.x) * 16 + 8) * scale, sy = (PLAYER_TILE.y + (o.vy - mine.y) * 16 - 16) * scale;
       if (sx < -40 * scale || sx > 280 * scale || sy < -40 * scale || sy > 200 * scale) continue;
-      if (!drawSprite(g, sx, sy, scale, o.gfx, o.f, walking, o.stepNo || 0)) drawTrainer(g, sx, sy, scale, o.color, o.f);
-      g.font = `${Math.round(7 * scale)}px system-ui, sans-serif`; g.textAlign = "center";
-      g.fillStyle = "rgba(0,0,0,.6)"; const tw = g.measureText(o.name).width + 6 * scale;
-      g.fillRect(sx - tw / 2, sy - 9 * scale, tw, 9 * scale);
-      g.fillStyle = "#fff"; g.fillText(o.name, sx, sy - 2.5 * scale);
+      let head = drawSprite(g, sx, sy, scale, o.gfx, o.f, walking, o.stepNo || 0);
+      if (head === false) { drawTrainer(g, sx, sy, scale, o.color, o.f); head = sy + 3 * scale; }
+      g.font = `600 ${Math.round(6 * scale)}px system-ui, sans-serif`; g.textAlign = "center";
+      g.fillStyle = "rgba(0,0,0,.6)"; const tw = g.measureText(o.name).width + 5 * scale;
+      g.fillRect(sx - tw / 2, head - 9 * scale, tw, 8 * scale);
+      g.fillStyle = "#fff"; g.fillText(o.name, sx, head - 3 * scale);
       const em = emotes.get(o.id);
-      if (em && em.until > Date.now()) { g.font = `${Math.round(12 * scale)}px system-ui`; g.fillText(em.text, sx, sy - 12 * scale); }
+      if (em && em.until > Date.now()) { g.font = `${Math.round(12 * scale)}px system-ui`; g.fillText(em.text, sx, head - 11 * scale); }
       // standing next to them and facing them? offer to interact
       const dx = o.x - i.x, dy = o.y - i.y, facingVec = { 1: [0, 1], 2: [0, -1], 3: [-1, 0], 4: [1, 0] }[i.f] || [0, 0];
       if (dx === facingVec[0] && dy === facingVec[1]) near = o;
@@ -326,9 +390,11 @@
   function start() {
     if (!sendTimer) sendTimer = setInterval(() => { const i = myInfo(); if (i && links.length) broadcast(i); }, 400);
     if (!drawRaf) draw();
+    if (!start.lookTimer) start.lookTimer = setInterval(applySelfLook, 1500);
     updateStatus();
   }
   function stop() {
+    clearInterval(start.lookTimer); start.lookTimer = null; restoreSelfLook();
     broadcast({ t: "bye", id: me.id });
     links.forEach(l => { try { l.close(); } catch (e) {} }); links = [];
     try { peer && peer.destroy(); } catch (e) {} peer = null; offline = null; role = null; others.clear();
@@ -439,6 +505,7 @@
     },
     open: openMenu,
     _sprites: () => spriteKit(),
+    _self: () => ({ selfLook, applySelfLook, restoreSelfLook, heapRomCopies }),
     _state: () => ({ role, others: [...others.values()], me, links: links.length }),
     // for other features riding on the same connection
     on: (fn) => hooks.push(fn),
