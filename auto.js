@@ -645,24 +645,25 @@ Keep your notes updated with progress (badges, team, current objective, where yo
     // Portrait: lift the D-pad, A/B and L/R up into the empty space under the game (just below Auto),
     // leaving a gap above the bottom row (Library, Select, Start, Games).
     if (controlsTop - pictureBottom >= 48 && groups.length) {
+      const phone = navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches;
+      const lr0 = [...emu.virtualGamepad.querySelectorAll(".b_l, .b_r")].map(el => el.getBoundingClientRect()).filter(r => r.height);
       const target = pictureBottom + 10 + btn.offsetHeight + 14;
-      const lift = Math.round((controlsTop - target) * 0.55);   // about halfway: room under Auto and above the bottom row
+      // phones: everything moves up — L/R sit right under the picture and the rest of the controls follow
+      const lift = phone && lr0.length === 2 ? Math.round(Math.min(lr0[0].top, lr0[1].top) - (pictureBottom + 12))
+        : Math.round((controlsTop - target) * 0.55);   // about halfway: room under Auto and above the bottom row
       if (lift > 8) groups.forEach(g => g.style.transform = `translateY(${-lift}px)`);
       // never let L/R slide under the Auto button
       const autoBottom = btn.getBoundingClientRect().bottom + 8;
       let lrTop = innerHeight;
       emu.virtualGamepad.querySelectorAll(".b_l, .b_r").forEach(el => { const r = el.getBoundingClientRect(); if (r.height) lrTop = Math.min(lrTop, r.top); });
-      if (lrTop < autoBottom && lift > 8) { const fix = Math.min(lift, Math.ceil(autoBottom - lrTop)); groups.forEach(g => g.style.transform = `translateY(${-(lift - fix)}px)`); }
+      if (!phone && lrTop < autoBottom && lift > 8) { const fix = Math.min(lift, Math.ceil(autoBottom - lrTop)); groups.forEach(g => g.style.transform = `translateY(${-(lift - fix)}px)`); }
       // D-pad a bit lower: level with A/B, but clear of Select/Start
-      // Phones held upright: Auto sits between L and R, and the game picture slides down to just above L/R
-      // (no empty strip between the picture and the controls).
+      // Phones held upright: Auto sits between L and R (right under the picture).
       const lr = [...emu.virtualGamepad.querySelectorAll(".b_l, .b_r")].map(el => el.getBoundingClientRect()).filter(r => r.height);
       if (lr.length === 2 && (navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches)) {
         const [l, r] = lr[0].left < lr[1].left ? lr : [lr[1], lr[0]], mid = (l.top + l.bottom) / 2;
         btn.style.right = "auto"; btn.style.left = "50%"; btn.style.transform = "translateX(-50%)";
         btn.style.top = Math.round(mid - btn.offsetHeight / 2) + "px";
-        const down = Math.round(Math.min(l.top, r.top) - 12 - pictureBottom);
-        if (down > 4) emu.canvas.style.transform = `translateY(${down}px)`;
       }
       if (dpad) {
         const d = dpad.getBoundingClientRect();
